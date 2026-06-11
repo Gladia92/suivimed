@@ -65,9 +65,11 @@ async function getEmail() {
 export async function signIn() {
   const verifier = randomVerifier();
   const chal = await challenge(verifier);
+  const state = randomVerifier(); // anti-CSRF : doit revenir intact dans la redirection
   const authUrl = "https://accounts.google.com/o/oauth2/v2/auth?" + new URLSearchParams({
     client_id: CLIENT_ID, redirect_uri: REDIRECT, response_type: "code", scope: SCOPE,
     code_challenge: chal, code_challenge_method: "S256", access_type: "offline", prompt: "consent",
+    state,
   });
   return new Promise((resolve, reject) => {
     let done = false;
@@ -79,6 +81,7 @@ export async function signIn() {
         const u = new URL(url);
         const code = u.searchParams.get("code");
         const err = u.searchParams.get("error");
+        if (u.searchParams.get("state") !== state) { reject(new Error("Réponse OAuth invalide (state)")); return; }
         if (err || !code) { reject(new Error(err || "Connexion annulée")); return; }
         await saveTokens(await exchange(code, verifier));
         resolve({ connected: true, email: await getEmail() });

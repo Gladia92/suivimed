@@ -108,9 +108,11 @@ function signIn() {
       const redirectUri = `http://127.0.0.1:${port}`;
       const verifier = b64url(crypto.randomBytes(32));
       const challenge = b64url(crypto.createHash("sha256").update(verifier).digest());
+      const state = b64url(crypto.randomBytes(16)); // anti-CSRF : doit revenir intact
       const authUrl = "https://accounts.google.com/o/oauth2/v2/auth?" + new URLSearchParams({
         client_id: CLIENT_ID, redirect_uri: redirectUri, response_type: "code", scope: SCOPE,
         code_challenge: challenge, code_challenge_method: "S256", access_type: "offline", prompt: "consent",
+        state,
       });
       let handled = false;
       server.on("request", async (req, res) => {
@@ -120,9 +122,11 @@ function signIn() {
         if (!code && !err) { res.writeHead(204); res.end(); return; }
         if (handled) { res.end(); return; }
         handled = true;
+        const stateOk = u.searchParams.get("state") === state;
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(resultPage(!!code && !err));
+        res.end(resultPage(!!code && !err && stateOk));
         setTimeout(() => { try { server.close(); } catch {} }, 200);
+        if (!stateOk) { reject(new Error("Réponse OAuth invalide (state)")); return; }
         if (err || !code) { reject(new Error(err || "Connexion annulée")); return; }
         try {
           saveTokens(await exchangeCode(code, verifier, redirectUri));
