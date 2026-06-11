@@ -1,0 +1,162 @@
+name: Build SuiviMed
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      tag: ${{ steps.ver.outputs.TAG }}
+      version: ${{ steps.ver.outputs.VERSION }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Compute version (semver + horodatage en métadonnée)
+        id: ver
+        shell: pwsh
+        run: |
+          # Base semver lue dans package.json (ex: 1.1.0)
+          # Métadonnée = numéro d'itération auto-incrémenté + horodatage
+          $base    = (Get-Content package.json -Raw | ConvertFrom-Json).version -replace '\+.*$',''
+          $run     = "${{ github.run_number }}"
+          $stamp   = Get-Date -Format 'yyyy.MM.dd.HHmm'
+          $version = "$base+build.$run.$stamp"  # ex: 0.1.0+build.7.2026.06.11.2055 (nom de l'exe)
+          $tag     = "v$base-build$run"         # ex: v0.1.0-build7 (tag git, sûr en URL)
+          "VERSION=$version" >> $env:GITHUB_OUTPUT
+          "TAG=$tag"         >> $env:GITHUB_OUTPUT
+          Write-Host "version=$version  tag=$tag"
+
+      - name: Appliquer la version et créer le tag
+        shell: pwsh
+        run: |
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $pkg.version = "${{ steps.ver.outputs.VERSION }}"
+          $pkg | ConvertTo-Json -Depth 10 | Set-Content package.json
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+          git tag "${{ steps.ver.outputs.TAG }}"
+          git push origin "${{ steps.ver.outputs.TAG }}"
+          Write-Host "Version appliquée : ${{ steps.ver.outputs.VERSION }}"
+
+      - name: Import certificate
+        if: env.CSC_LINK != ''
+        run: |
+          $cert_base64 = "${{ secrets.CSC_LINK }}"
+          $cert_bytes = [Convert]::FromBase64String($cert_base64)
+          $cert_path = "cert.pfx"
+          [IO.File]::WriteAllBytes($cert_path, $cert_bytes)
+          $pwd = ConvertTo-SecureString -String "${{ secrets.CSC_KEY_PASSWORD }}" -Force -AsPlainText
+          Import-PfxCertificate -FilePath $cert_path -CertStoreLocation Cert:\CurrentUser\My -Password $pwd
+          Write-Host "Certificate imported"
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+
+      - name: Restore Google OAuth secret
+        if: env.GOOGLE_CLIENT_SECRET != ''
+        run: |
+          [IO.File]::WriteAllText("google-secret.txt", $env:GOOGLE_CLIENT_SECRET)
+          Write-Host "google-secret.txt restored"
+        shell: pwsh
+        env:
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+
+      - name: Build
+        run: npm run make
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SuiviMed
+          path: out/*.exe
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.TAG }}
+          name: SuiviMed ${{ steps.ver.outputs.VERSION }}
+          files: out/*.exe
+          prerelease: false
+          make_latest: true
+
+  android:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install dependencies
+        run: |
+          npm install
+          # Contourne le bug npm des dépendances optionnelles de Rollup sur Linux
+          node -e "const v=require('rollup/package.json').version;require('child_process').execSync('npm install --no-save @rollup/rollup-linux-x64-gnu@'+v,{stdio:'inherit'})"
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+
+      - name: Build web assets
+        run: npm run build
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Restore signing keystore
+        if: env.ANDROID_KEYSTORE_BASE64 != ''
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/xyvel-medical-release.keystore
+          printf 'storeFile=../xyvel-medical-release.keystore\nstorePassword=%s\nkeyAlias=xyvel\nkeyPassword=%s\n' "$ANDROID_KEYSTORE_PASSWORD" "$ANDROID_KEYSTORE_PASSWORD" > android/keystore.properties
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
+
+      - name: Build signed release APK + AAB
+        if: env.ANDROID_KEYSTORE_BASE64 != ''
+        run: |
+          BASE=$(node -p "require('./package.json').version.split('+')[0]")
+          echo "versionName=$BASE  versionCode=${{ github.run_number }}"
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease bundleRelease --no-daemon -Pvcode=${{ github.run_number }} -Pvname=$BASE
+          cd ..
+          cp android/app/build/outputs/apk/release/app-release.apk "SuiviMed-${{ needs.build.outputs.tag }}.apk"
+          cp android/app/build/outputs/bundle/release/app-release.aab "SuiviMed-${{ needs.build.outputs.tag }}.aab"
+
+      - name: Attach APK + AAB to release
+        if: env.ANDROID_KEYSTORE_BASE64 != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build.outputs.tag }}
+          files: |
+            SuiviMed-*.apk
+            SuiviMed-*.aab

@@ -1,0 +1,83 @@
+name: Publish to Play Store
+
+on:
+  workflow_dispatch:
+    inputs:
+      track:
+        description: "Canal Play Console (doit correspondre au nom du canal créé dans Play Console)"
+        required: true
+        default: "alpha"
+        type: choice
+        options:
+          - internal
+          - alpha
+          - beta
+          - production
+      release_notes:
+        description: "Notes de version (fr-FR)"
+        required: false
+        default: "Corrections et améliorations."
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install dependencies
+        run: |
+          npm install
+          # Contourne le bug npm des dépendances optionnelles de Rollup sur Linux
+          node -e "const v=require('rollup/package.json').version;require('child_process').execSync('npm install --no-save @rollup/rollup-linux-x64-gnu@'+v,{stdio:'inherit'})"
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+
+      - name: Build web assets
+        run: npm run build
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Restore signing keystore
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/xyvel-medical-release.keystore
+          printf 'storeFile=../xyvel-medical-release.keystore\nstorePassword=%s\nkeyAlias=xyvel\nkeyPassword=%s\n' "$ANDROID_KEYSTORE_PASSWORD" "$ANDROID_KEYSTORE_PASSWORD" > android/keystore.properties
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
+
+      - name: Build signed AAB
+        run: |
+          BASE=$(node -p "require('./package.json').version.split('+')[0]")
+          echo "versionName=$BASE  versionCode=${{ github.run_number }}"
+          cd android
+          chmod +x gradlew
+          ./gradlew bundleRelease --no-daemon -Pvcode=${{ github.run_number }} -Pvname=$BASE
+
+      - name: Write release notes
+        run: |
+          mkdir -p distribution/whatsnew
+          printf '%s' "${{ github.event.inputs.release_notes }}" > distribution/whatsnew/whatsnew-fr-FR
+
+      - name: Upload to Play Console
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT }}
+          packageName: com.xyvel.suivimed
+          releaseFiles: android/app/build/outputs/bundle/release/app-release.aab
+          track: ${{ github.event.inputs.track }}
+          status: completed
+          whatsNewDirectory: distribution/whatsnew
