@@ -66,6 +66,30 @@ function takenDose(dayData, i, momentKey) {
   return Number(v) || 0;
 }
 
+// Affichage d'une dose PRESCRITE en fraction lisible (0.5 → « ½ », 1.5 → « 1½ »).
+// Ne concerne que la posologie : la grille, elle, n'enregistre que « pris / pas pris ».
+function fmtDose(n){
+  n = Number(n) || 0;
+  const whole = Math.floor(n);
+  const f = n - whole;
+  const g = f===0.25?"¼":f===0.5?"½":f===0.75?"¾":"";
+  if (!g && f!==0) return String(n);
+  if (whole===0) return g || "0";
+  return g ? `${whole}${g}` : String(whole);
+}
+// Saisie d'une dose tolérante : « 1/2 », « 0,5 », « .5 », entiers… → nombre.
+function parseDose(s){
+  if (s==null) return 0;
+  s = String(s).trim().replace(",", ".");
+  if (s==="") return 0;
+  const fr = s.match(/^(\d*\.?\d+)\s*\/\s*(\d*\.?\d+)$/);
+  if (fr){ const d=parseFloat(fr[2]); return d ? Math.max(0, parseFloat(fr[1])/d) : 0; }
+  const n = parseFloat(s);
+  return isNaN(n)||n<0 ? 0 : n;
+}
+// Représentation éditable d'une dose (virgule décimale, FR-friendly).
+function doseStr(n){ n = Number(n)||0; return n ? String(n).replace(".", ",") : "0"; }
+
 // ── Storage abstraction
 async function loadFile(filename) {
   if (isElectron) {
@@ -147,16 +171,17 @@ function computeAdherence(monthData, meds, year, month) {
       const ds = dateStr(year, month, d);
       const dd = monthData[`d${d}`];
       MOMENTS.forEach(mo => {
-        const P = prescribedDose(med, ds, mo.key);
-        const T = takenDose(dd, i, mo.key);
-        prescribed += P;
-        taken += T;
-        if (P > T) missed += (P - T);
-        if (T > P) extra += (T - P);
-        if (T > 0) takenDays.add(d);
+        // Comptage par MOMENT (binaire) : la grille n'enregistre que pris / pas pris.
+        const P = prescribedDose(med, ds, mo.key) > 0; // moment prévu ?
+        const T = takenDose(dd, i, mo.key) > 0;         // moment pris ?
+        if (P) prescribed += 1;
+        if (P && T) taken += 1;
+        if (P && !T) missed += 1;
+        if (!P && T) extra += 1; // pris à un moment non prévu par la posologie
+        if (T) takenDays.add(d);
       });
     }
-    const rate = prescribed > 0 ? Math.round((prescribed - missed) / prescribed * 100) : null;
+    const rate = prescribed > 0 ? Math.round(taken / prescribed * 100) : null;
     return { name: med.name, prescribed, taken, missed, extra, days: takenDays.size, rate };
   });
   const sum = (k) => perMed.reduce((s, x) => s + x[k], 0);
@@ -246,7 +271,7 @@ ${recap || "Aucune donnée."}
 ${detail}
 ---
 
-Définitions : « prévue » = dose prescrite par le régime posologique actif ce jour-là ; « réelle » = dose réellement prise et cochée ; « oubli » = dose prévue non prise ; « en plus » = dose prise au-delà du prescrit (signal possible de surconsommation).
+Définitions : on compte des MOMENTS de prise (matin/midi/soir), pas des quantités — la grille enregistre seulement si la prise a été faite ou non. « prévue » = moment où une dose est prescrite ce jour-là ; « réelle » = moment prescrit effectivement pris ; « oubli » = moment prescrit non pris ; « en plus » = prise effectuée à un moment NON prévu par la posologie. La quantité par prise (½, 1, 2…) figure dans la posologie prescrite ci-dessus.
 
 Commence ta réponse par le titre exact, seul sur la première ligne, sans le modifier : COMPTE RENDU OBSERVANCE POUR LE MÉDECIN TRAITANT
 
@@ -279,7 +304,7 @@ function exportPDF(year, month, data, settings, aiResult) {
     const med = meds[row.medIdx];
     const P = prescribedDose(med, ds, row.momentKey);
     const T = takenDose(data[`d${d}`], row.medIdx, row.momentKey);
-    if (T > 0) return T >= 2 ? "✓✓" : "✓";
+    if (T > 0) return "✓";
     if (P > 0) return "○";
     return "";
   };
@@ -301,7 +326,7 @@ function exportPDF(year, month, data, settings, aiResult) {
 
   const aiHtml = aiResult ? `<div style="margin-top:28px;page-break-before:always"><h3 style="font-size:18px;color:#185FA5;margin-bottom:12px">Analyse (IA locale)</h3><div style="font-size:14px;line-height:1.7;white-space:pre-wrap">${aiResult}</div></div>` : "";
 
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>SuiviMed ${MONTHS[month]} ${year}</title><style>@page{size:A4 landscape;margin:10mm;}@media print{.np{display:none!important;}}</style></head><body style="font-family:Arial,sans-serif;padding:20px;color:#222"><div style="display:flex;justify-content:space-between;margin-bottom:18px"><div><h1 style="font-size:24px;margin:0 0 4px">SuiviMed</h1><p style="font-size:15px;color:#555;margin:0">${MONTHS[month]} ${year}</p></div><button class="np" onclick="window.print()" style="padding:8px 16px;font-size:14px;cursor:pointer">Imprimer / PDF</button></div><div style="overflow-x:auto"><table style="border-collapse:collapse"><thead><tr style="background:#f0f4fa"><th style="padding:6px 10px;text-align:left;font-size:13px;border:0.5px solid #ccc;min-width:150px">Médicament / moment</th>${Array.from({length:days},(_,i)=>`<th style="text-align:center;font-size:12px;padding:4px 2px;border:0.5px solid #ccc;min-width:24px">${i+1}</th>`).join("")}</tr></thead><tbody>${tableRows}</tbody></table></div><p style="font-size:11px;color:#777;margin-top:6px">✓ = pris · ○ = prévu non pris (oubli) · ✓✓ = 2 prises</p>${synHtml}${aiHtml}</body></html>`;
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>SuiviMed ${MONTHS[month]} ${year}</title><style>@page{size:A4 landscape;margin:10mm;}@media print{.np{display:none!important;}}</style></head><body style="font-family:Arial,sans-serif;padding:20px;color:#222"><div style="display:flex;justify-content:space-between;margin-bottom:18px"><div><h1 style="font-size:24px;margin:0 0 4px">SuiviMed</h1><p style="font-size:15px;color:#555;margin:0">${MONTHS[month]} ${year}</p></div><button class="np" onclick="window.print()" style="padding:8px 16px;font-size:14px;cursor:pointer">Imprimer / PDF</button></div><div style="overflow-x:auto"><table style="border-collapse:collapse"><thead><tr style="background:#f0f4fa"><th style="padding:6px 10px;text-align:left;font-size:13px;border:0.5px solid #ccc;min-width:150px">Médicament / moment</th>${Array.from({length:days},(_,i)=>`<th style="text-align:center;font-size:12px;padding:4px 2px;border:0.5px solid #ccc;min-width:24px">${i+1}</th>`).join("")}</tr></thead><tbody>${tableRows}</tbody></table></div><p style="font-size:11px;color:#777;margin-top:6px">✓ = pris · ○ = prévu non pris (oubli)</p>${synHtml}${aiHtml}</body></html>`;
   const w = window.open("", "_blank"); w.document.write(html); w.document.close();
 }
 
@@ -691,7 +716,7 @@ export default function App() {
             </table>
           </div>
           <div style={{color:"var(--color-text-secondary)",fontSize:11,marginTop:8}}>
-            <strong style={{color:"var(--color-text-success)"}}>✓</strong> = pris · <strong style={{color:"var(--color-text-danger)"}}>○</strong> = prévu non pris (oubli) · <strong style={{color:"var(--color-text-warning)"}}>✓</strong> orange = pris hors prescription / dose différente · clic pour cocher (cycle 0 → 1 → 2). La case grisée indique une prise prévue par la posologie.
+            <strong style={{color:"var(--color-text-success)"}}>✓</strong> = pris · <strong style={{color:"var(--color-text-danger)"}}>○</strong> = prévu non pris (oubli) · <strong style={{color:"var(--color-text-warning)"}}>✓</strong> orange = pris hors prescription · clic pour cocher / décocher. La case bleutée indique une prise prévue par la posologie.
           </div>
         </>
       )}
@@ -904,7 +929,7 @@ export default function App() {
 
           <p style={{fontWeight:500,marginBottom:4,fontSize:14}}>Médicaments & posologie</p>
           <p style={{color:"var(--color-text-secondary)",fontSize:11,marginBottom:12,lineHeight:1.6}}>
-            Pour chaque médicament, ajoutez un ou plusieurs <strong>régimes</strong> : une plage de dates et la dose à prendre matin / midi / soir. Pour une posologie qui change dans le temps (ex. chaque semaine), créez un régime par période. Le régime sans date de fin est « en cours ».
+            Pour chaque médicament, ajoutez un ou plusieurs <strong>régimes</strong> : une plage de dates et la dose à prendre matin / midi / soir. Une demi-dose est possible — tape <strong>½</strong>, <strong>0,5</strong> ou <strong>1/2</strong>. Pour une posologie qui change dans le temps (ex. chaque semaine), créez un régime par période. Le régime sans date de fin est « en cours ».
           </p>
           {settings.meds.map((m,i)=>{ const med = medOf(m); return (
             <div key={i} style={{border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-md)",padding:"12px",marginBottom:12}}>
@@ -985,22 +1010,25 @@ function MetricCard({label,value,unit,icon,color}){
   );
 }
 
-// Cellule d'une prise (médicament × jour × moment). Cycle 0 → 1 → 2 → 0.
+// Cellule d'une prise : la grille n'enregistre QUE « pris / pas pris » (binaire).
+// Clic = bascule pris ↔ non pris. La quantité (½, 2…) vit dans la posologie, pas ici.
 function MomentCell({P,T,onChange,cell=34}){
-  const next = T>=2 ? 0 : T+1;
+  const taken = T>0, prevu = P>0;
   let glyph, col;
-  if (T>0) {
-    glyph = T>=2 ? "✓✓" : "✓";
-    col = P===0 ? "var(--color-text-warning)" : (T===P ? "var(--color-text-success)" : "var(--color-text-warning)");
+  if (taken) {
+    glyph = "✓";
+    col = prevu ? "var(--color-text-success)" : "var(--color-text-warning)"; // pris hors prescription = orange
   } else {
-    glyph = P>0 ? "○" : "–";
-    col = P>0 ? "var(--color-text-danger)" : "var(--color-text-tertiary)";
+    glyph = prevu ? "○" : "–";
+    col = prevu ? "var(--color-text-danger)" : "var(--color-text-tertiary)";
   }
-  const bg = P>0 ? "rgba(55,138,221,0.07)" : "transparent";
-  const title = `Prévu : ${P} · Pris : ${T}` + (T===0&&P>0?" — oubli":"") + (T>P&&P>0?" — dose supérieure au prescrit":"") + (T>0&&P===0?" — pris hors prescription":"");
+  const bg = prevu ? "rgba(55,138,221,0.07)" : "transparent";
+  const title = `${prevu ? `Prévu : ${fmtDose(P)}` : "Non prévu"} · ${taken ? "pris" : "non pris"}`
+    + (!taken && prevu ? " — oubli" : "")
+    + (taken && !prevu ? " — pris hors prescription" : "");
   return(
-    <button onClick={()=>onChange(next)} title={title} aria-label="Prise de médicament"
-      style={{width:cell-4,height:26,border:"none",background:bg,borderRadius:4,cursor:"pointer",color:col,fontWeight:700,fontSize:T>=2?11:14,padding:0,lineHeight:1}}>
+    <button onClick={()=>onChange(taken ? 0 : 1)} title={title} aria-label="Prise de médicament"
+      style={{width:cell-4,height:26,border:"none",background:bg,borderRadius:4,cursor:"pointer",color:col,fontWeight:700,fontSize:14,padding:0,lineHeight:1}}>
       {glyph}
     </button>
   );
@@ -1013,13 +1041,35 @@ function Regimen({r,onChange,onDelete}){
     <>
       <input type="date" value={r.start||""} onChange={e=>onChange({start:e.target.value})} style={{fontSize:12,padding:"5px 6px"}}/>
       <input type="date" value={r.end||""} onChange={e=>onChange({end:e.target.value||null})} style={{fontSize:12,padding:"5px 6px"}}/>
-      <input type="number" min="0" step="0.5" value={r.matin ?? 0} onChange={e=>onChange({matin: e.target.value===""?0:Number(e.target.value)})} style={numStyle}/>
-      <input type="number" min="0" step="0.5" value={r.midi ?? 0}  onChange={e=>onChange({midi:  e.target.value===""?0:Number(e.target.value)})} style={numStyle}/>
-      <input type="number" min="0" step="0.5" value={r.soir ?? 0}  onChange={e=>onChange({soir:  e.target.value===""?0:Number(e.target.value)})} style={numStyle}/>
+      <DoseInput value={r.matin} onCommit={v=>onChange({matin:v})} style={numStyle}/>
+      <DoseInput value={r.midi}  onCommit={v=>onChange({midi:v})}  style={numStyle}/>
+      <DoseInput value={r.soir}  onCommit={v=>onChange({soir:v})}  style={numStyle}/>
       <button onClick={onDelete} title="Supprimer ce régime" style={{color:"var(--color-text-danger)",padding:"4px 8px"}}>
         <i className="ti ti-x" aria-hidden="true"></i>
       </button>
     </>
+  );
+}
+
+// Saisie d'une dose tolérante aux fractions (½, 0,5, 1/2, 1.5…).
+// Affiche en clair (« ½ ») au repos ; édition libre, validation au blur / Entrée.
+function DoseInput({value,onCommit,style}){
+  const [editing,setEditing] = useState(false);
+  const [txt,setTxt] = useState("");
+  const commit = () => { const n = parseDose(txt); setEditing(false); onCommit(n); };
+  if (!editing){
+    return(
+      <input type="text" readOnly value={fmtDose(value)} title="Cliquer pour modifier (½, 0,5 ou 1/2 acceptés)"
+        onFocus={()=>{ setTxt(doseStr(value)); setEditing(true); }}
+        style={{...style,cursor:"pointer"}}/>
+    );
+  }
+  return(
+    <input type="text" inputMode="decimal" autoFocus value={txt} title="Ex. 1, ½, 0,5 ou 1/2"
+      onChange={e=>setTxt(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e=>{ if(e.key==="Enter"){ e.preventDefault(); e.currentTarget.blur(); } }}
+      style={style}/>
   );
 }
 
