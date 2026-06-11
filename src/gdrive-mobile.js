@@ -2,9 +2,10 @@
 // Flux OAuth PKCE via le navigateur système (client iOS, pas de secret),
 // retour par schéma personnalisé. Stockage = localStorage (comme le journal).
 //
-// NOTE : on réutilise le projet Google de MigraineLog (mêmes identifiants OAuth).
-// Les données de SuiviMed sont rangées dans le MÊME appDataFolder privé mais
-// sous un nom de fichier distinct (suivimed.json), donc aucune collision.
+// Client OAuth « XYVEL Medical Mobile » PARTAGÉ par tout le pack XYVEL Medical.
+// Le schéma de retour (ID client inversé) est commun aux apps du pack ; chacune
+// range ses données dans le MÊME appDataFolder privé mais sous un nom de fichier
+// distinct (suivimed.json ici), donc aucune collision.
 import { Browser } from "@capacitor/browser";
 import { App } from "@capacitor/app";
 import { Preferences } from "@capacitor/preferences";

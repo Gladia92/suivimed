@@ -1,9 +1,10 @@
 // Synchronisation Google Drive (flux OAuth "application de bureau", PKCE + loopback).
 // Le journal est stocké en UN fichier JSON dans le dossier privé de l'app (appDataFolder).
 //
-// NOTE : on réutilise le projet Google de MigraineLog (même client + secret).
-// Les données de SuiviMed sont rangées sous un nom de fichier distinct
-// (suivimed.json), donc aucune collision avec le journal de migraines.
+// Client OAuth « XYVEL Medical Desktop » PARTAGÉ par tout le pack XYVEL Medical
+// (même CLIENT_ID/secret pour MigraineLog, SuiviMed, …). Pas de collision : chaque
+// app range ses données sous un nom de fichier distinct (suivimed.json ici).
+// Loopback 127.0.0.1 → aucune collision de redirection entre apps desktop.
 const http = require("http");
 const crypto = require("crypto");
 const fs = require("fs");

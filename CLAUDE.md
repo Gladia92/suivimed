@@ -36,17 +36,23 @@ Android : `npx cap add android` (1re fois) puis `npx cap sync android`.
 - CI : GitHub Actions — `build.yml` publie une Release (EXE signé + APK + AAB),
   `pages.yml` déploie la version web sur Pages, `play-store.yml` publie sur
   Play Console (manuel, nécessite le secret `GOOGLE_PLAY_SERVICE_ACCOUNT`).
-- OAuth Google Drive : **client partagé pour tout le pack XYVEL Medical**
-  (même `CLIENT_ID`/secret que MigraineLog — projet en cours de renommage en
-  « XYVEL Medical » côté Google Cloud Console pour un écran de consentement
-  cohérent vu par les utilisateurs : « XYVEL Medical souhaite accéder à votre
-  Google Drive »). Chaque sous-app range ses données sous son propre nom de
-  fichier dans l'`appDataFolder` (`suivimed.json` ici, `migrainelog.json` pour
-  MigraineLog) → aucune collision malgré le client partagé.
-  `google-secret.txt` (desktop) n'est pas versionné (copié depuis MigraineLog) ;
-  la sync mobile (PKCE) n'a pas besoin de secret.
-  Si une isolation totale par app est nécessaire un jour (ex. app suspendue
-  indépendamment), créer un projet OAuth dédié — voir le pack `README.md`.
+- OAuth Google Drive : **clients partagés pour tout le pack XYVEL Medical**, dans
+  le projet Google Cloud brandé « XYVEL Medical » (écran de consentement :
+  « XYVEL Medical souhaite accéder à votre Google Drive »). Deux clients réutilisés
+  tels quels par toutes les apps du pack :
+    - `XYVEL Medical Mobile` (type iOS, PKCE sans secret) → mobile/Android.
+      Schéma de retour = ID client inversé, commun à tout le pack.
+    - `XYVEL Medical Desktop` (type application de bureau, loopback 127.0.0.1) → Electron.
+      Secret dans `google-secret.txt` (non versionné, partagé).
+  Chaque sous-app range ses données sous son propre nom de fichier dans
+  l'`appDataFolder` (`suivimed.json` ici, `migrainelog.json` pour MigraineLog)
+  → aucune collision malgré les clients partagés.
+  La sync mobile (PKCE) n'a pas besoin de secret.
+  Limites connues du partage : le schéma de retour mobile étant commun, si un
+  utilisateur installe deux apps du pack sur le même téléphone, Android peut
+  demander « ouvrir avec… » au retour OAuth. Le loopback desktop, lui, ne
+  collisionne jamais. Pour une isolation totale (ex. app suspendue
+  indépendamment), créer des clients dédiés — voir le pack `README.md`.
 
 ## Signature / secrets (matériel PARTAGÉ avec le pack XYVEL)
 - Certificat Windows : `cert.pfx` (privé, non commité, CN=XYVEL Medical, copié
