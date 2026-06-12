@@ -1227,54 +1227,58 @@ function MomentCell({P,T,onChange,cell=34}){
   );
 }
 
-// Vue « Jour » : checklist moderne en cartes, un gros bouton par moment de prise.
+// Vue « Jour » : regroupée PAR MOMENT (matin/midi/soir). Chaque section liste les
+// médicaments à prendre à ce moment, en cases à cocher pleine largeur (mobile-first).
 function DayView({ meds, data, year, month, day, onToggle }){
   const ds = dateStr(year, month, day);
   const past = isPast(ds);
   const dd = data[`d${day}`];
+  const sections = MOMENTS.map(mo => {
+    const items = meds
+      .map((med, i) => ({ med, i, P: prescribedDose(med, ds, mo.key), taken: takenDose(dd, i, mo.key) > 0 }))
+      .filter(x => x.P > 0 || x.taken);
+    return { mo, items, done: items.filter(x => x.taken).length };
+  }).filter(s => s.items.length);
+
+  if (!sections.length) {
+    return <p style={{textAlign:"center",color:"var(--color-text-secondary)",margin:"32px 0",fontSize:14}}>Aucune prise prévue ce jour.</p>;
+  }
   return (
-    <div style={{display:"grid",gap:12}}>
-      {meds.map((med,i)=>{
-        const moments = MOMENTS.filter(mo => prescribedDose(med, ds, mo.key) > 0 || takenDose(dd, i, mo.key) > 0);
-        return (
-          <div key={i} style={{border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"14px 16px",background:"var(--color-background-primary)"}}>
-            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:moments.length?12:0}}>
-              <i className="ti ti-pill" style={{fontSize:16,color:"var(--color-text-info)"}} aria-hidden="true"></i>
-              <span style={{fontWeight:600,fontSize:15}}>{med.name||"(sans nom)"}</span>
-              {med.note && <span style={{fontSize:12,color:"var(--color-text-tertiary)"}}>· {med.note}</span>}
-            </div>
-            {moments.length === 0
-              ? <p style={{fontSize:12,color:"var(--color-text-tertiary)",margin:0}}>Aucune prise prévue ce jour.</p>
-              : <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
-                  {moments.map(mo=>{
-                    const P = prescribedDose(med, ds, mo.key);
-                    const taken = takenDose(dd, i, mo.key) > 0;
-                    return <MomentToggle key={mo.key} mo={mo} P={P} taken={taken} past={past} onClick={()=>onToggle(day,i,mo.key, taken?0:1)} />;
-                  })}
-                </div>}
+    <div style={{display:"grid",gap:14}}>
+      {sections.map(({mo,items,done})=>(
+        <div key={mo.key} style={{border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",overflow:"hidden",background:"var(--color-background-primary)"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,padding:"11px 16px",background:"var(--color-background-secondary)"}}>
+            <i className={`ti ${mo.icon}`} style={{fontSize:18,color:"var(--color-text-info)"}} aria-hidden="true"></i>
+            <span style={{fontWeight:600,fontSize:15,flex:1}}>{mo.label}</span>
+            <span style={{fontSize:12,color:done===items.length?"var(--color-text-success)":"var(--color-text-secondary)",fontWeight:500}}>{done}/{items.length} pris</span>
           </div>
-        );
-      })}
+          {items.map(({med,i,P,taken})=>(
+            <IntakeRow key={i} name={med.name||"(sans nom)"} note={med.note} P={P} taken={taken} past={past} onClick={()=>onToggle(day,i,mo.key, taken?0:1)} />
+          ))}
+        </div>
+      ))}
     </div>
   );
 }
 
-// Gros bouton tactile d'un moment de prise (vue Jour).
-function MomentToggle({ mo, P, taken, past, onClick }){
+// Une ligne « médicament à prendre » dans la vue Jour : pleine largeur, gros
+// tap target, coche à gauche, statut à droite.
+function IntakeRow({ name, note, P, taken, past, onClick }){
   const prescribed = P > 0;
-  let bg, border, color, status, icon;
-  if (taken)                   { bg="rgba(59,109,17,0.10)"; border="var(--color-text-success)"; color="var(--color-text-success)"; status="Pris"; icon="ti-check"; }
-  else if (prescribed && past) { bg="var(--color-background-danger)"; border="var(--color-border-danger)"; color="var(--color-text-danger)"; status="Oublié"; icon="ti-x"; }
-  else if (prescribed)         { bg="var(--color-background-secondary)"; border="var(--color-border-info)"; color="var(--color-text-info)"; status="À prendre"; icon="ti-clock"; }
-  else                         { bg="var(--color-background-secondary)"; border="var(--color-border-tertiary)"; color="var(--color-text-tertiary)"; status="—"; icon="ti-minus"; }
+  let circleIcon, circleColor, status, statusColor;
+  if (taken)                   { circleIcon="ti-circle-check-filled"; circleColor="var(--color-text-success)"; status="Pris";      statusColor="var(--color-text-success)"; }
+  else if (prescribed && past) { circleIcon="ti-circle";              circleColor="var(--color-text-danger)";  status="Oublié";    statusColor="var(--color-text-danger)"; }
+  else if (prescribed)         { circleIcon="ti-circle";              circleColor="var(--color-text-info)";    status="À prendre"; statusColor="var(--color-text-info)"; }
+  else                         { circleIcon="ti-circle";              circleColor="var(--color-text-tertiary)";status="—";         statusColor="var(--color-text-tertiary)"; }
+  const sub = [prescribed ? `dose ${fmtDose(P)}` : "", note || ""].filter(Boolean).join(" · ");
   return (
-    <button onClick={onClick} style={{flex:"1 1 0",minWidth:92,display:"flex",flexDirection:"column",alignItems:"center",gap:5,padding:"14px 10px",borderRadius:14,border:`1.5px solid ${border}`,background:bg,color,cursor:"pointer"}}>
-      <i className={`ti ${mo.icon}`} style={{fontSize:20}} aria-hidden="true"></i>
-      <span style={{fontSize:13,fontWeight:600}}>{mo.label}</span>
-      {prescribed && <span style={{fontSize:11,opacity:0.85}}>dose {fmtDose(P)}</span>}
-      <span style={{display:"flex",alignItems:"center",gap:4,fontSize:12,fontWeight:600,marginTop:2}}>
-        <i className={`ti ${icon}`} aria-hidden="true"></i>{status}
+    <button onClick={onClick} style={{width:"100%",display:"flex",alignItems:"center",gap:12,padding:"13px 16px",border:"none",borderTop:"0.5px solid var(--color-border-tertiary)",background:"transparent",cursor:"pointer",textAlign:"left",minHeight:56}}>
+      <i className={`ti ${circleIcon}`} style={{fontSize:24,color:circleColor,flex:"0 0 auto"}} aria-hidden="true"></i>
+      <span style={{flex:1,minWidth:0}}>
+        <span style={{display:"block",fontWeight:500,fontSize:14,color:"var(--color-text-primary)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{name}</span>
+        {sub && <span style={{display:"block",fontSize:12,color:"var(--color-text-tertiary)"}}>{sub}</span>}
       </span>
+      <span style={{fontSize:12,fontWeight:600,color:statusColor,flex:"0 0 auto"}}>{status}</span>
     </button>
   );
 }
