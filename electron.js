@@ -191,6 +191,10 @@ ipcMain.handle("gdrive-signin",  async () => gdrive.signIn());
 ipcMain.handle("gdrive-signout", async () => gdrive.signOut());
 ipcMain.handle("gdrive-status",  async () => gdrive.getStatus());
 
+ipcMain.handle("gdrive-remote-time", async () => {
+  return { remoteModifiedTime: await gdrive.getRemoteTime() };
+});
+
 ipcMain.handle("gdrive-pull", async () => {
   const blob = await gdrive.pull();
   if (!blob || !blob.files) return { ok: false, empty: true };
@@ -198,7 +202,7 @@ ipcMain.handle("gdrive-pull", async () => {
     if (!name.startsWith("suivimed_") || !name.endsWith(".json")) continue;
     fs.writeFileSync(path.join(DATA_DIR, name), typeof content === "string" ? content : JSON.stringify(content, null, 2), "utf8");
   }
-  return { ok: true, count: Object.keys(blob.files).length, updatedAt: blob.updatedAt || null };
+  return { ok: true, count: Object.keys(blob.files).length, updatedAt: blob.updatedAt || null, remoteModifiedTime: blob._remoteModifiedTime || null };
 });
 
 ipcMain.handle("gdrive-push", async () => {
@@ -206,8 +210,8 @@ ipcMain.handle("gdrive-push", async () => {
   for (const f of fs.readdirSync(DATA_DIR)) {
     if (f.startsWith("suivimed_") && f.endsWith(".json")) files[f] = fs.readFileSync(path.join(DATA_DIR, f), "utf8");
   }
-  await gdrive.push({ updatedAt: Date.now(), files });
-  return { ok: true, count: Object.keys(files).length };
+  const res = await gdrive.push({ updatedAt: Date.now(), files });
+  return { ok: true, count: Object.keys(files).length, remoteModifiedTime: res?.modifiedTime || null };
 });
 
 // ── IPC : statut Ollama

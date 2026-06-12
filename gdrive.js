@@ -157,13 +157,21 @@ async function findFile() {
   return (await r.json()).files?.[0] || null;
 }
 
+// Date de dernière modification du fichier distant (sans le télécharger), pour
+// décider si un pull est nécessaire avant de charger les données locales.
+async function getRemoteTime() {
+  const f = await findFile();
+  return f?.modifiedTime || null;
+}
+
 async function pull() {
   const f = await findFile();
   if (!f) return null;
   const at = await accessToken();
   const r = await fetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`, { headers: { Authorization: "Bearer " + at } });
   if (!r.ok) throw new Error("Drive (téléchargement) : " + (await r.text()));
-  return await r.json();
+  const blob = await r.json();
+  return { ...blob, _remoteModifiedTime: f.modifiedTime };
 }
 
 async function push(blob) {
@@ -176,15 +184,15 @@ async function push(blob) {
     `--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(blob)}\r\n` +
     `--${boundary}--`;
   const url = f
-    ? `https://www.googleapis.com/upload/drive/v3/files/${f.id}?uploadType=multipart`
-    : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
+    ? `https://www.googleapis.com/upload/drive/v3/files/${f.id}?uploadType=multipart&fields=modifiedTime`
+    : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=modifiedTime`;
   const r = await fetch(url, {
     method: f ? "PATCH" : "POST",
     headers: { Authorization: "Bearer " + at, "Content-Type": `multipart/related; boundary=${boundary}` },
     body,
   });
   if (!r.ok) throw new Error("Drive (envoi) : " + (await r.text()));
-  return true;
+  return await r.json();
 }
 
-module.exports = { signIn, signOut, getStatus, pull, push };
+module.exports = { signIn, signOut, getStatus, getRemoteTime, pull, push };

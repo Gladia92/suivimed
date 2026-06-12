@@ -14,6 +14,7 @@ const sync = {
   status:  () => isElectron ? window.electronAPI.gdriveStatus()  : gdriveMobile.getStatus(),
   pull:    () => isElectron ? window.electronAPI.gdrivePull()    : gdriveMobile.pull(),
   push:    () => isElectron ? window.electronAPI.gdrivePush()    : gdriveMobile.push(),
+  remoteTime: () => isElectron ? window.electronAPI.gdriveRemoteTime() : gdriveMobile.getRemoteTime(),
 };
 
 // Fenêtre de planification des rappels : nombre de jours couverts, et nombre de
@@ -189,6 +190,33 @@ async function saveFile(filename, data) {
   } else {
     localStorage.setItem(filename, str);
   }
+}
+
+// Fichier purement local (jamais synchronisé : pas de préfixe "suivimed_") qui
+// retient la date du dernier alignement avec le Drive, pour savoir au démarrage
+// si le Drive a été modifié par un autre appareil depuis (→ pull nécessaire)
+// ou si c'est à nous de pousser nos changements locaux.
+const SYNC_META_FILE = "sync_meta.json";
+async function loadSyncMeta() { return (await loadFile(SYNC_META_FILE)) || {}; }
+async function markSynced(remoteModifiedTime) {
+  const at = remoteModifiedTime ? new Date(remoteModifiedTime).getTime() : Date.now();
+  await saveFile(SYNC_META_FILE, { lastSyncAt: at });
+}
+
+// Au démarrage : si le Drive a été modifié par un autre appareil depuis notre
+// dernière synchro, récupère ces données avant de charger l'état local — pour
+// éviter que l'auto-push n'écrase le Drive avec un cache local périmé.
+async function pullIfRemoteNewer() {
+  try {
+    const { remoteModifiedTime } = await sync.remoteTime();
+    if (!remoteModifiedTime) return false;
+    const remoteAt = new Date(remoteModifiedTime).getTime();
+    const meta = await loadSyncMeta();
+    if (meta.lastSyncAt && remoteAt <= meta.lastSyncAt) return false;
+    await sync.pull();
+    await markSynced(remoteModifiedTime);
+    return true;
+  } catch { return false; }
 }
 
 async function loadSettings() {
@@ -505,6 +533,14 @@ export default function App() {
   // Init
   useEffect(() => {
     (async () => {
+      if (syncAvailable) {
+        const status = await sync.status().catch(() => ({ connected: false }));
+        setGsync(status);
+        // Si un autre appareil a modifié le Drive depuis notre dernière synchro,
+        // on récupère ces données AVANT de charger l'état local, pour que
+        // l'auto-push ne reparte pas avec un cache local périmé.
+        if (status.connected) await pullIfRemoteNewer();
+      }
       const s = await loadSettings();
       setSettings(s);
       if (isCapacitor) scheduleReminders(s);
@@ -514,7 +550,6 @@ export default function App() {
         const dir = await window.electronAPI.getDataDir();
         setDataDir(dir);
       }
-      if (syncAvailable) sync.status().then(setGsync).catch(()=>{});
     })();
   }, []);
 
@@ -538,7 +573,9 @@ export default function App() {
   useEffect(() => {
     if (!syncAvailable || !gsync.connected) return;
     if (pushTimer.current) clearTimeout(pushTimer.current);
-    pushTimer.current = setTimeout(() => { sync.push().catch(()=>{}); }, 2500);
+    pushTimer.current = setTimeout(() => {
+      sync.push().then(res => markSynced(res?.remoteModifiedTime)).catch(()=>{});
+    }, 2500);
     return () => { if (pushTimer.current) clearTimeout(pushTimer.current); };
   }, [data, settings, gsync.connected]);
 
@@ -658,7 +695,10 @@ export default function App() {
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      if (syncAvailable && gsync.connected) await sync.pull();
+      if (syncAvailable && gsync.connected) {
+        const res = await sync.pull();
+        await markSynced(res?.remoteModifiedTime);
+      }
       const s = await reloadFromDisk();
       setRefreshTick(t => t + 1);
       if (isCapacitor) scheduleReminders(s);
@@ -704,9 +744,11 @@ export default function App() {
       setSyncMsg("Récupération des données…");
       const pulled = await sync.pull();
       if (pulled.empty) {
-        await sync.push();
+        const res = await sync.push();
+        await markSynced(res?.remoteModifiedTime);
         setSyncMsg("Données envoyées sur ton Drive.");
       } else {
+        await markSynced(pulled.remoteModifiedTime);
         await reloadFromDisk();
         setSyncMsg(`Données récupérées depuis ton Drive (${pulled.count} fichier(s)).`);
       }
@@ -723,7 +765,11 @@ export default function App() {
 
   const syncNow = async () => {
     setSyncBusy(true); setSyncMsg("Synchronisation…");
-    try { await sync.push(); setSyncMsg("Synchronisé à l'instant."); }
+    try {
+      const res = await sync.push();
+      await markSynced(res?.remoteModifiedTime);
+      setSyncMsg("Synchronisé à l'instant.");
+    }
     catch (e) { setSyncMsg("Échec : " + (e?.message || e)); }
     setSyncBusy(false);
   };

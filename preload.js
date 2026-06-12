@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   gdriveStatus:  ()                  => ipcRenderer.invoke("gdrive-status"),
   gdrivePull:    ()                  => ipcRenderer.invoke("gdrive-pull"),
   gdrivePush:    ()                  => ipcRenderer.invoke("gdrive-push"),
+  gdriveRemoteTime: ()                => ipcRenderer.invoke("gdrive-remote-time"),
   ollamaStatus:  ()                  => ipcRenderer.invoke("ollama-status"),
   ollamaSetup:   ()                  => ipcRenderer.invoke("ollama-setup"),
   ollamaStart:   ()                  => ipcRenderer.invoke("ollama-start"),

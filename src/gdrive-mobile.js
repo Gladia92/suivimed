@@ -102,10 +102,16 @@ export async function signOut() { await clearTokens(); return { connected: false
 async function findFile() {
   const at = await accessToken();
   const r = await fetch("https://www.googleapis.com/drive/v3/files?" + new URLSearchParams({
-    spaces: "appDataFolder", q: `name='${FILE_NAME}'`, fields: "files(id)",
+    spaces: "appDataFolder", q: `name='${FILE_NAME}'`, fields: "files(id,modifiedTime)",
   }), { headers: { Authorization: "Bearer " + at } });
   if (!r.ok) throw new Error("Drive (liste) : " + (await r.text()));
   return (await r.json()).files?.[0] || null;
+}
+// Date de dernière modification du fichier distant (sans le télécharger), pour
+// décider si un pull est nécessaire avant de charger les données locales.
+export async function getRemoteTime() {
+  const f = await findFile();
+  return { remoteModifiedTime: f?.modifiedTime || null };
 }
 async function pullBlob() {
   const f = await findFile();
@@ -113,7 +119,8 @@ async function pullBlob() {
   const at = await accessToken();
   const r = await fetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`, { headers: { Authorization: "Bearer " + at } });
   if (!r.ok) throw new Error("Drive (téléchargement) : " + (await r.text()));
-  return await r.json();
+  const blob = await r.json();
+  return { ...blob, _remoteModifiedTime: f.modifiedTime };
 }
 async function pushBlob(blob) {
   const at = await accessToken();
@@ -125,11 +132,11 @@ async function pushBlob(blob) {
     `--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(blob)}\r\n` +
     `--${boundary}--`;
   const url = f
-    ? `https://www.googleapis.com/upload/drive/v3/files/${f.id}?uploadType=multipart`
-    : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
+    ? `https://www.googleapis.com/upload/drive/v3/files/${f.id}?uploadType=multipart&fields=modifiedTime`
+    : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=modifiedTime`;
   const r = await fetch(url, { method: f ? "PATCH" : "POST", headers: { Authorization: "Bearer " + at, "Content-Type": `multipart/related; boundary=${boundary}` }, body });
   if (!r.ok) throw new Error("Drive (envoi) : " + (await r.text()));
-  return true;
+  return await r.json();
 }
 
 // pull/push opèrent sur localStorage (mêmes clés que le journal)
@@ -141,7 +148,7 @@ export async function pull() {
       localStorage.setItem(name, typeof content === "string" ? content : JSON.stringify(content));
     }
   }
-  return { ok: true, count: Object.keys(blob.files).length };
+  return { ok: true, count: Object.keys(blob.files).length, remoteModifiedTime: blob._remoteModifiedTime || null };
 }
 export async function push() {
   const files = {};
@@ -149,6 +156,6 @@ export async function push() {
     const k = localStorage.key(i);
     if (k && k.startsWith("suivimed_") && k.endsWith(".json")) files[k] = localStorage.getItem(k);
   }
-  await pushBlob({ updatedAt: Date.now(), files });
-  return { ok: true, count: Object.keys(files).length };
+  const res = await pushBlob({ updatedAt: Date.now(), files });
+  return { ok: true, count: Object.keys(files).length, remoteModifiedTime: res?.modifiedTime || null };
 }
