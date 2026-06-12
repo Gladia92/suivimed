@@ -16,6 +16,33 @@ const sync = {
   push:    () => isElectron ? window.electronAPI.gdrivePush()    : gdriveMobile.push(),
 };
 
+// Rappels de prise (mobile) : replanifie 3 notifications quotidiennes répétées
+// (matin/midi/soir) aux heures choisies, ou les annule si désactivé.
+async function applyReminders(reminders){
+  if (!isCapacitor) return;
+  let LN;
+  try { ({ LocalNotifications: LN } = await import("@capacitor/local-notifications")); }
+  catch { return; }
+  try {
+    await LN.cancel({ notifications: [{ id: 1 }, { id: 2 }, { id: 3 }] }).catch(()=>{});
+    if (!reminders?.enabled) return;
+    const perm = await LN.requestPermissions();
+    if (perm.display !== "granted") return;
+    const map = [["matin", 1, "Prise du matin"], ["midi", 2, "Prise du midi"], ["soir", 3, "Prise du soir"]];
+    const items = [];
+    for (const [k, id, title] of map){
+      const t = reminders[k]; if (!t) continue;
+      const [h, mi] = String(t).split(":").map(Number);
+      if (isNaN(h) || isNaN(mi)) continue;
+      items.push({
+        id, title: "💊 " + title, body: "N'oublie pas ta prise de médicament.",
+        schedule: { on: { hour: h, minute: mi }, allowWhileIdle: true },
+      });
+    }
+    if (items.length) await LN.schedule({ notifications: items });
+  } catch {}
+}
+
 // Les 3 moments de prise dans la journée.
 const MOMENTS = [
   { key: "matin", label: "Matin", icon: "ti-sunrise" },
@@ -33,6 +60,9 @@ function settingsFile()    { return "suivimed_settings.json"; }
 function pad(n)            { return String(n).padStart(2, "0"); }
 function dateStr(y, m, d)  { return `${y}-${pad(m + 1)}-${pad(d)}`; } // m 0-based -> ISO YYYY-MM-DD
 function todayStr()        { return dateStr(today.getFullYear(), today.getMonth(), today.getDate()); }
+// Une date ISO est-elle dans le passé (strictement avant aujourd'hui) ?
+// Un moment prévu n'est un « oubli » que s'il est passé et non pris.
+function isPast(ds)        { return ds < todayStr(); }
 
 // Un médicament : { name, note, regimens: [{ start, end, matin, midi, soir }] }.
 // Rétro-compatible avec l'ancien format chaîne (juste un nom).
@@ -160,34 +190,56 @@ function relevantMoments(med, monthData, i) {
   return MOMENTS.filter(mo => set.has(mo.key));
 }
 
-// Observance d'un mois : prévu vs pris, oublis (prévu non pris) et prises en plus.
+// Observance d'un mois. Comptage par MOMENT (binaire : pris / pas pris).
+//  - « due »   : moment prescrit ET échu (date passée) OU déjà pris → entre au dénominateur.
+//  - « taken » : moment dû et pris.
+//  - « missed »: moment prescrit, passé et NON pris (un oubli ne l'est qu'au passé).
+//  - « extra » : pris à un moment non prévu par la posologie.
+// Les moments prévus aujourd'hui/futur mais pas encore pris ne pénalisent pas l'observance.
+function emptyMoments() { return { matin:{due:0,taken:0,missed:0}, midi:{due:0,taken:0,missed:0}, soir:{due:0,taken:0,missed:0} }; }
 function computeAdherence(monthData, meds, year, month) {
   const days = daysInMonth(year, month);
+  const byMoment = emptyMoments();
   const perMed = meds.map((m, i) => {
     const med = medOf(m);
     let prescribed = 0, taken = 0, missed = 0, extra = 0;
     const takenDays = new Set();
+    const medMoment = emptyMoments();
     for (let d = 1; d <= days; d++) {
       const ds = dateStr(year, month, d);
+      const past = isPast(ds);
       const dd = monthData[`d${d}`];
       MOMENTS.forEach(mo => {
-        // Comptage par MOMENT (binaire) : la grille n'enregistre que pris / pas pris.
         const P = prescribedDose(med, ds, mo.key) > 0; // moment prévu ?
         const T = takenDose(dd, i, mo.key) > 0;         // moment pris ?
-        if (P) prescribed += 1;
-        if (P && T) taken += 1;
-        if (P && !T) missed += 1;
+        const due = P && (past || T);                   // échu ou déjà pris
+        if (due)            { prescribed += 1; byMoment[mo.key].due += 1;    medMoment[mo.key].due += 1; }
+        if (due && T)       { taken += 1;      byMoment[mo.key].taken += 1;  medMoment[mo.key].taken += 1; }
+        if (P && past && !T){ missed += 1;     byMoment[mo.key].missed += 1; medMoment[mo.key].missed += 1; }
         if (!P && T) extra += 1; // pris à un moment non prévu par la posologie
         if (T) takenDays.add(d);
       });
     }
     const rate = prescribed > 0 ? Math.round(taken / prescribed * 100) : null;
-    return { name: med.name, prescribed, taken, missed, extra, days: takenDays.size, rate };
+    return { name: med.name, prescribed, taken, missed, extra, days: takenDays.size, rate, byMoment: medMoment };
   });
   const sum = (k) => perMed.reduce((s, x) => s + x[k], 0);
-  const prescribed = sum("prescribed"), missed = sum("missed");
-  const rate = prescribed > 0 ? Math.round((prescribed - missed) / prescribed * 100) : null;
-  return { perMed, prescribed, taken: sum("taken"), missed, extra: sum("extra"), rate };
+  const prescribed = sum("prescribed"), taken = sum("taken"), missed = sum("missed");
+  const rate = prescribed > 0 ? Math.round(taken / prescribed * 100) : null;
+  return { perMed, prescribed, taken, missed, extra: sum("extra"), rate, byMoment };
+}
+
+// Moment (matin/midi/soir) le plus oublié sur un objet byMoment ; null si rien.
+function worstMoment(byMoment) {
+  let worst = null;
+  MOMENTS.forEach(mo => {
+    const b = byMoment[mo.key];
+    if (!b || b.due === 0 || b.missed === 0) return;
+    const rate = b.taken / b.due;
+    if (!worst || b.missed > worst.missed || (b.missed === worst.missed && rate < worst.rate))
+      worst = { key: mo.key, label: mo.label, missed: b.missed, due: b.due, rate };
+  });
+  return worst;
 }
 
 function rateColor(rate) {
@@ -203,7 +255,7 @@ function regimenText(med) {
   if (!regs.length) return "posologie non renseignée";
   return regs.map(r => {
     const period = `du ${r.start || "?"}${r.end ? ` au ${r.end}` : " (en cours)"}`;
-    const doses = MOMENTS.map(mo => Number(r[mo.key]) > 0 ? `${mo.label.toLowerCase()} ${r[mo.key]}` : null)
+    const doses = MOMENTS.map(mo => Number(r[mo.key]) > 0 ? `${mo.label.toLowerCase()} ${fmtDose(r[mo.key])}` : null)
       .filter(Boolean).join(", ") || "aucune prise";
     return `${period} : ${doses}`;
   }).join(" | ");
@@ -217,7 +269,7 @@ function buildPrompt(monthsData, settings, year, month) {
     const lines = regs.length
       ? regs.map(r => {
           const period = `du ${r.start || "?"}${r.end ? ` au ${r.end}` : " (en cours)"}`;
-          const doses = MOMENTS.map(mo => Number(r[mo.key]) > 0 ? `${mo.label.toLowerCase()} ${r[mo.key]}` : null)
+          const doses = MOMENTS.map(mo => Number(r[mo.key]) > 0 ? `${mo.label.toLowerCase()} ${fmtDose(r[mo.key])}` : null)
             .filter(Boolean).join(", ") || "aucune prise";
           return `    • ${period} : ${doses}`;
         }).join("\n")
@@ -229,19 +281,41 @@ function buildPrompt(monthsData, settings, year, month) {
     .map(({ year: y, month: m, data }) => ({ y, m, adh: computeAdherence(data, settings.meds, y, m) }))
     .filter(x => x.adh.prescribed > 0 || x.adh.taken > 0);
 
+  // Observance par moment de la journée (matin/midi/soir), tous médicaments confondus.
+  const momentLine = (byMoment) => MOMENTS.map(mo => {
+    const b = byMoment[mo.key];
+    if (!b || b.due === 0) return null;
+    return `${mo.label.toLowerCase()} ${Math.round(b.taken / b.due * 100)}%${b.missed ? ` (${b.missed} oubli${b.missed > 1 ? "s" : ""})` : ""}`;
+  }).filter(Boolean).join(", ");
+
   const recap = monthly.map(({ y, m, adh }) => {
     const tag = (y === year && m === month) ? " [mois courant]" : "";
     const per = adh.perMed.filter(mc => mc.prescribed > 0 || mc.taken > 0)
-      .map(mc => `${mc.name}: ${mc.rate !== null ? mc.rate + "%" : "n/a"}${mc.missed ? `, ${mc.missed} oubli(s)` : ""}${mc.extra ? `, ${mc.extra} en plus` : ""}`).join(" ; ");
-    return `- ${MONTHS[m]} ${y}${tag} : observance globale ${adh.rate !== null ? adh.rate + "%" : "n/a"} (${adh.prescribed} prises prévues, ${adh.taken} réelles, ${adh.missed} oubli(s), ${adh.extra} en plus)${per ? ` — ${per}` : ""}`;
+      .map(mc => `${mc.name}: ${mc.rate !== null ? mc.rate + "%" : "n/a"}${mc.missed ? `, ${mc.missed} oubli(s)` : ""}${mc.extra ? `, ${mc.extra} hors prescription` : ""}`).join(" ; ");
+    const moms = momentLine(adh.byMoment);
+    return `- ${MONTHS[m]} ${y}${tag} : observance ${adh.rate !== null ? adh.rate + "%" : "n/a"} (${adh.taken}/${adh.prescribed} prises dues faites, ${adh.missed} oubli(s), ${adh.extra} hors prescription)${moms ? ` — par moment : ${moms}` : ""}${per ? ` — par médicament : ${per}` : ""}`;
   }).join("\n");
 
   const cur = monthly.find(x => x.y === year && x.m === month);
   const detail = cur
-    ? cur.adh.perMed.filter(mc => mc.prescribed > 0 || mc.taken > 0).map(mc =>
-        `- ${mc.name} : ${mc.prescribed} prise(s) prévue(s), ${mc.taken} réelle(s), ${mc.missed} oubli(s), ${mc.extra} en plus, observance ${mc.rate !== null ? mc.rate + "%" : "n/a"}`
-      ).join("\n")
+    ? cur.adh.perMed.filter(mc => mc.prescribed > 0 || mc.taken > 0).map(mc => {
+        const w = worstMoment(mc.byMoment);
+        const wTxt = w ? ` — oublis surtout le ${w.label.toLowerCase()} (${w.missed})` : "";
+        return `- ${mc.name} : ${mc.taken}/${mc.prescribed} prises dues faites, ${mc.missed} oubli(s)${mc.extra ? `, ${mc.extra} hors prescription` : ""}, observance ${mc.rate !== null ? mc.rate + "%" : "n/a"}${wTxt}`;
+      }).join("\n")
     : "Aucune prise enregistrée ce mois-ci.";
+
+  // Signaux saillants extraits des données (pour guider une analyse ciblée).
+  const signals = [];
+  if (cur) {
+    const w = worstMoment(cur.adh.byMoment);
+    if (w) signals.push(`Moment le plus oublié : ${w.label.toLowerCase()} (${w.missed} oubli(s) sur ${w.due} prévus).`);
+    const weak = cur.adh.perMed.filter(mc => mc.rate !== null && mc.rate < 80);
+    if (weak.length) signals.push(`Médicament(s) sous 80 % d'observance : ${weak.map(mc => `${mc.name} (${mc.rate}%)`).join(", ")}.`);
+    const over = cur.adh.perMed.filter(mc => mc.extra > 0);
+    if (over.length) signals.push(`Prises hors prescription : ${over.map(mc => `${mc.name} (${mc.extra})`).join(", ")} — vérifier un éventuel surdosage.`);
+    if (!signals.length) signals.push("Aucun signal d'alerte évident sur le mois courant.");
+  }
 
   const prof = settings.profile || {};
   const sexLabel = prof.sex === "F" ? "Femme" : prof.sex === "M" ? "Homme" : (prof.sex || "non précisé");
@@ -269,22 +343,30 @@ ${recap || "Aucune donnée."}
 
 --- DÉTAIL DU MOIS COURANT (${MONTHS[month]} ${year}) ---
 ${detail}
+
+--- SIGNAUX À EXAMINER EN PRIORITÉ ---
+${signals.length ? signals.join("\n") : "—"}
 ---
 
-Définitions : on compte des MOMENTS de prise (matin/midi/soir), pas des quantités — la grille enregistre seulement si la prise a été faite ou non. « prévue » = moment où une dose est prescrite ce jour-là ; « réelle » = moment prescrit effectivement pris ; « oubli » = moment prescrit non pris ; « en plus » = prise effectuée à un moment NON prévu par la posologie. La quantité par prise (½, 1, 2…) figure dans la posologie prescrite ci-dessus.
+Définitions : on compte des MOMENTS de prise (matin/midi/soir), pas des quantités. « due » = moment prescrit et déjà échu ; « faite » = moment dû effectivement pris ; « oubli » = moment dû non pris (uniquement dans le passé) ; « hors prescription » = prise à un moment non prévu (signal possible de surconsommation). La quantité par prise (½, 1, 2…) figure dans la posologie ci-dessus.
 
 Commence ta réponse par le titre exact, seul sur la première ligne, sans le modifier : COMPTE RENDU OBSERVANCE POUR LE MÉDECIN TRAITANT
 
-Puis produis une analyse structurée et factuelle (titres en MAJUSCULES) :
+Exigences de rédaction :
+- Sois CIBLÉ et CONCIS : appuie chaque affirmation sur un chiffre du journal (taux, nombre d'oublis, moment concerné). Pas de généralités creuses.
+- PRIORISE : commence par ce qui compte le plus pour CE patient (les signaux ci-dessus). N'allonge pas pour remplir.
+- Si une rubrique n'a rien de notable, écris « RAS » plutôt que de meubler.
 
-1. RÉSUMÉ — médicaments suivis, période couverte, observance globale.
-2. OBSERVANCE PAR MÉDICAMENT — taux de prise, oublis récurrents (un moment précis ? un médicament précis ?), régularité.
-3. POSOLOGIE & SÉCURITÉ — la posologie prescrite paraît-elle cohérente ? Signes de SURCONSOMMATION/surdosage (prises « en plus » répétées, dose max possiblement dépassée) ou de SOUS-DOSAGE. Signale toute dose qui te semble inhabituelle.
-4. INTERACTIONS & PROFIL — interactions médicamenteuses possibles entre les médicaments listés et avec le traitement de fond ; points de vigilance selon l'âge, le sexe, le poids et les antécédents.
-5. SUGGESTIONS POUR LE MÉDECIN — pistes d'ajustement de posologie et, le cas échéant, alternatives thérapeutiques à DISCUTER. Précise EXPLICITEMENT qu'il s'agit de suggestions destinées au médecin et JAMAIS d'une prescription.
-6. CONSEILS D'OBSERVANCE POUR LE PATIENT — rappels concrets pour ne pas oublier ses prises.
+Structure (titres en MAJUSCULES) :
 
-Sois prudent. Signale explicitement si les données sont insuffisantes (peu de mois ou peu de prises) et rappelle que seule une consultation médicale permet de décider.`;
+1. RÉSUMÉ — médicaments, période, observance globale, et LE point d'attention principal en une phrase.
+2. OBSERVANCE — taux global et par médicament ; surtout, à QUEL MOMENT (matin/midi/soir) et pour QUEL médicament les oublis se concentrent, chiffres à l'appui.
+3. POSOLOGIE & SÉCURITÉ — la posologie prescrite est-elle cohérente pour ce profil (âge, poids, antécédents) ? Signes de SURDOSAGE (prises hors prescription, dose forte) ou de SOUS-DOSAGE. Signale toute dose inhabituelle.
+4. INTERACTIONS — interactions plausibles entre les médicaments listés et avec le traitement de fond ; vigilance selon le profil. Sois spécifique aux molécules citées.
+5. SUGGESTIONS POUR LE MÉDECIN — 2 à 4 pistes concrètes d'ajustement ou alternatives à DISCUTER, justifiées par les données. Rappelle EXPLICITEMENT que ce sont des suggestions, JAMAIS une prescription.
+6. CONSEILS D'OBSERVANCE — rappels concrets et personnalisés, ciblant le moment le plus oublié.
+
+Sois prudent : signale si les données sont insuffisantes (peu de mois/prises) et rappelle que seule une consultation médicale permet de décider.`;
 }
 
 function exportPDF(year, month, data, settings, aiResult) {
@@ -350,12 +432,20 @@ export default function App() {
   const [syncMsg,  setSyncMsg]  = useState("");
   const [saveStatus, setSaveStatus] = useState("saved");
   const saveTimer = useRef(null);
+  // Largeur de fenêtre → grille compacte sur petit écran (mobile).
+  const [vw, setVw] = useState(typeof window !== "undefined" ? window.innerWidth : 1024);
+  useEffect(() => {
+    const onResize = () => setVw(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   // Init
   useEffect(() => {
     (async () => {
       const s = await loadSettings();
       setSettings(s);
+      if (isCapacitor) applyReminders(s.reminders);
       const d = await loadMonth(year, month);
       setData(d);
       if (isElectron) {
@@ -518,6 +608,11 @@ export default function App() {
   // ── Réglages : profil & médicaments
   const saveSettings = (s) => { setSettings(s); saveFile(settingsFile(), s); };
   const updateProfile = (patch) => saveSettings({ ...settings, profile: { ...(settings.profile||{}), ...patch } });
+  const updateReminders = (patch) => {
+    const r = { enabled:false, matin:"08:00", midi:"12:00", soir:"20:00", ...(settings.reminders||{}), ...patch };
+    saveSettings({ ...settings, reminders: r });
+    applyReminders(r);
+  };
   const addMed = () => saveSettings({ ...settings, meds: [...settings.meds, { name: `Médicament ${settings.meds.length+1}`, note: "", regimens: [{ start: todayStr(), end: null, matin: 1, midi: 0, soir: 0 }] }] });
   const updateMed = (i, patch) => saveSettings({ ...settings, meds: settings.meds.map((m,idx)=> idx===i ? { ...medOf(m), ...patch } : m) });
   const deleteMed = (i) => { saveSettings({ ...settings, meds: settings.meds.filter((_,idx)=>idx!==i) }); setConfirmDel(null); };
@@ -610,7 +705,9 @@ export default function App() {
     : null;
   const annualMissed = annualData.reduce((s,m)=>s+m.missed,0);
 
-  const CELL=34, LABEL_W=190;
+  const compact = vw < 600;            // mobile / petit écran
+  const CELL    = compact ? 26 : 34;
+  const LABEL_W = compact ? 104 : 190;
 
   const tabs = [
     {id:"grid",      icon:"ti-table",          label:"Grille"},
@@ -670,14 +767,18 @@ export default function App() {
 
       {/* GRID */}
       {view==="grid"&&(
-        meds.length === 0
-          ? <EmptyMeds onGo={()=>setView("settings")} />
-          : <>
+        <>
+          {meds.length === 0 && (
+            <p style={{color:"var(--color-text-secondary)",textAlign:"center",margin:"24px 0"}}>
+              Ajoute ton premier médicament ci-dessous pour commencer le suivi.
+            </p>
+          )}
+          {meds.length > 0 && (<>
           <div style={{overflowX:"auto",borderRadius:"var(--border-radius-lg)",border:"0.5px solid var(--color-border-tertiary)",width:"fit-content",maxWidth:"100%",margin:"0 auto"}}>
             <table style={{borderCollapse:"collapse",tableLayout:"fixed",width:LABEL_W+days*CELL+"px"}}>
               <thead>
                 <tr style={{background:"var(--color-background-secondary)"}}>
-                  <th style={{width:LABEL_W,padding:"6px 10px",textAlign:"left",fontWeight:500,borderRight:"0.5px solid var(--color-border-tertiary)",position:"sticky",left:0,background:"var(--color-background-secondary)",zIndex:2,fontSize:12}}>Médicament / moment</th>
+                  <th style={{width:LABEL_W,padding:compact?"6px 6px":"6px 10px",textAlign:"left",fontWeight:500,borderRight:"0.5px solid var(--color-border-tertiary)",position:"sticky",left:0,background:"var(--color-background-secondary)",zIndex:2,fontSize:compact?11:12}}>{compact?"Méd. / moment":"Médicament / moment"}</th>
                   {cols.map(d=>(
                     <th key={d} style={{width:CELL,textAlign:"center",fontWeight:isToday(d)?500:400,fontSize:11,padding:"6px 0",color:isToday(d)?"var(--color-text-info)":"var(--color-text-secondary)",borderLeft:"0.5px solid var(--color-border-tertiary)"}}>
                       {d}
@@ -688,7 +789,7 @@ export default function App() {
               <tbody>
                 {gridRows.map((row)=> row.type==="head" ? (
                   <tr key={row.key} style={{background:"var(--color-background-secondary)"}}>
-                    <td style={{padding:"5px 10px",borderRight:"0.5px solid var(--color-border-tertiary)",position:"sticky",left:0,background:"var(--color-background-secondary)",zIndex:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:LABEL_W,fontSize:12,fontWeight:600}}>
+                    <td style={{padding:compact?"5px 6px":"5px 10px",borderRight:"0.5px solid var(--color-border-tertiary)",position:"sticky",left:0,background:"var(--color-background-secondary)",zIndex:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:LABEL_W,fontSize:compact?11:12,fontWeight:600}}>
                       <i className="ti ti-pill" style={{fontSize:12,marginRight:5,color:"var(--color-text-info)"}} aria-hidden="true"></i>
                       {row.name}{row.note && <span style={{fontWeight:400,color:"var(--color-text-tertiary)"}}> · {row.note}</span>}
                     </td>
@@ -696,7 +797,7 @@ export default function App() {
                   </tr>
                 ) : (
                   <tr key={row.key}>
-                    <td style={{padding:"3px 10px 3px 24px",borderRight:"0.5px solid var(--color-border-tertiary)",position:"sticky",left:0,background:"var(--color-background-primary)",zIndex:1,whiteSpace:"nowrap",fontSize:12,color:"var(--color-text-secondary)"}}>
+                    <td style={{padding:compact?"3px 4px 3px 10px":"3px 10px 3px 24px",borderRight:"0.5px solid var(--color-border-tertiary)",position:"sticky",left:0,background:"var(--color-background-primary)",zIndex:1,whiteSpace:"nowrap",fontSize:compact?11:12,color:"var(--color-text-secondary)"}}>
                       <i className={`ti ${row.icon}`} style={{fontSize:12,marginRight:5}} aria-hidden="true"></i>{row.label}
                     </td>
                     {cols.map(d=>{
@@ -718,6 +819,16 @@ export default function App() {
           <div style={{color:"var(--color-text-secondary)",fontSize:11,marginTop:8}}>
             <strong style={{color:"var(--color-text-success)"}}>✓</strong> = pris · <strong style={{color:"var(--color-text-danger)"}}>○</strong> = prévu non pris (oubli) · <strong style={{color:"var(--color-text-warning)"}}>✓</strong> orange = pris hors prescription · clic pour cocher / décocher. La case bleutée indique une prise prévue par la posologie.
           </div>
+          </>)}
+
+          {/* Médicaments & posologie (déplacé sous la grille) */}
+          <div style={{borderTop:"0.5px solid var(--color-border-tertiary)",margin:"20px 0 14px"}}></div>
+          <MedsPosology
+            meds={settings.meds}
+            updateMed={updateMed} addMed={addMed} setConfirmDel={setConfirmDel}
+            addRegimen={addRegimen} updateRegimen={updateRegimen} deleteRegimen={deleteRegimen}
+            confirmDel={confirmDel} deleteMed={deleteMed}
+          />
         </>
       )}
 
@@ -725,24 +836,63 @@ export default function App() {
       {view==="observance"&&(
         <div>
           {!hasMonthData
-            ?<p style={{color:"var(--color-text-secondary)",textAlign:"center",marginTop:32}}>Aucune prise enregistrée ce mois.</p>
+            ?<p style={{color:"var(--color-text-secondary)",textAlign:"center",marginTop:32}}>Aucune prise prévue ou enregistrée ce mois.</p>
             :<>
-              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12,marginBottom:20}}>
-                <MetricCard label="Observance globale" value={adh.rate!=null?adh.rate:"—"} unit={adh.rate!=null?"%":""} icon="ti-circle-check" color={rateColor(adh.rate)}/>
-                <MetricCard label="Prises prévues"     value={adh.prescribed} unit="" icon="ti-clipboard-list"/>
-                <MetricCard label="Prises réelles"     value={adh.taken}      unit="" icon="ti-pill"/>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:12,marginBottom:20}}>
+                <MetricCard label="Observance" value={adh.rate!=null?adh.rate:"—"} unit={adh.rate!=null?"%":""} icon="ti-circle-check" color={rateColor(adh.rate)}/>
+                <MetricCard label="Prises dues"        value={adh.prescribed} unit="" icon="ti-clipboard-list"/>
+                <MetricCard label="Faites"             value={adh.taken}      unit="" icon="ti-pill"/>
                 <MetricCard label="Oublis"             value={adh.missed}     unit="" icon="ti-alert-triangle"/>
-                <MetricCard label="Prises en plus"     value={adh.extra}      unit="" icon="ti-arrow-up-circle"/>
+                {adh.extra>0 && <MetricCard label="Hors prescription" value={adh.extra} unit="" icon="ti-arrow-up-circle"/>}
               </div>
+
+              {(() => {
+                const moms = MOMENTS.map(mo => ({ mo, b: adh.byMoment[mo.key] })).filter(x => x.b.due > 0);
+                if (!moms.length) return null;
+                const worst = worstMoment(adh.byMoment);
+                return (
+                  <>
+                    <p style={{fontWeight:500,marginBottom:10,fontSize:13}}>Par moment de la journée</p>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:8,marginBottom:8}}>
+                      {moms.map(({mo,b}) => {
+                        const r = Math.round(b.taken/b.due*100);
+                        const isWorst = worst && worst.key===mo.key;
+                        return (
+                          <div key={mo.key} style={{padding:"10px 12px",borderRadius:"var(--border-radius-md)",background:"var(--color-background-secondary)",border:isWorst?"1px solid var(--color-border-warning)":"0.5px solid var(--color-border-tertiary)"}}>
+                            <div style={{display:"flex",alignItems:"center",gap:6,fontSize:12,color:"var(--color-text-secondary)",marginBottom:6}}>
+                              <i className={`ti ${mo.icon}`} aria-hidden="true"></i>{mo.label}
+                            </div>
+                            <div style={{display:"flex",alignItems:"center",gap:8}}>
+                              <span style={{fontSize:18,fontWeight:600}}>{r}%</span>
+                              <span style={{width:11,height:11,borderRadius:3,background:rateColor(r),display:"inline-block"}}></span>
+                            </div>
+                            <div style={{fontSize:11,color:"var(--color-text-secondary)",marginTop:4}}>{b.missed} oubli(s) / {b.due} dus</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {worst && (
+                      <p style={{fontSize:12,color:"var(--color-text-warning)",marginBottom:18,display:"flex",alignItems:"center",gap:6}}>
+                        <i className="ti ti-alert-triangle" aria-hidden="true"></i>
+                        Moment le plus oublié : <strong>&nbsp;{worst.label.toLowerCase()}</strong>&nbsp;({worst.missed} oubli{worst.missed>1?"s":""}).
+                      </p>
+                    )}
+                  </>
+                );
+              })()}
+
               <p style={{fontWeight:500,marginBottom:10,fontSize:13}}>Par médicament</p>
               <div style={{display:"grid",gap:8}}>
-                {adh.perMed.filter(m=>m.prescribed>0||m.taken>0).map((m,i)=>(
-                  <div key={i} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 14px",background:"var(--color-background-secondary)",borderRadius:"var(--border-radius-md)",flexWrap:"wrap"}}>
-                    <span style={{fontWeight:500,flex:"1 1 140px"}}>{m.name}</span>
-                    <span style={{fontSize:13,fontWeight:600,color:"#222",padding:"2px 10px",borderRadius:999,background:rateColor(m.rate)}}>{m.rate!=null?m.rate+"%":"n/a"}</span>
-                    <span style={{fontSize:12,color:"var(--color-text-secondary)"}}>{m.prescribed} prévue(s) · {m.taken} réelle(s) · {m.missed} oubli(s){m.extra?` · ${m.extra} en plus`:""}</span>
-                  </div>
-                ))}
+                {adh.perMed.filter(m=>m.prescribed>0||m.taken>0).map((m,i)=>{
+                  const w = worstMoment(m.byMoment);
+                  return (
+                    <div key={i} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 14px",background:"var(--color-background-secondary)",borderRadius:"var(--border-radius-md)",flexWrap:"wrap"}}>
+                      <span style={{fontWeight:500,flex:"1 1 140px"}}>{m.name}</span>
+                      <span style={{fontSize:13,fontWeight:600,color:"#222",padding:"2px 10px",borderRadius:999,background:rateColor(m.rate)}}>{m.rate!=null?m.rate+"%":"n/a"}</span>
+                      <span style={{fontSize:12,color:"var(--color-text-secondary)"}}>{m.taken}/{m.prescribed} faites · {m.missed} oubli(s){m.extra?` · ${m.extra} hors prescr.`:""}{w?` · surtout le ${w.label.toLowerCase()}`:""}</span>
+                    </div>
+                  );
+                })}
               </div>
             </>
           }
@@ -925,50 +1075,27 @@ export default function App() {
             Traitement de fond / autres médicaments
             <textarea value={settings.profile?.treatments ?? ""} onChange={e=>updateProfile({treatments:e.target.value})} placeholder="ex. anticoagulant, contraception, antidépresseur…" rows={2} style={{width:"100%",marginTop:4,resize:"vertical"}}/>
           </label>
-          <div style={{borderTop:"0.5px solid var(--color-border-tertiary)",margin:"16px 0"}}></div>
-
-          <p style={{fontWeight:500,marginBottom:4,fontSize:14}}>Médicaments & posologie</p>
-          <p style={{color:"var(--color-text-secondary)",fontSize:11,marginBottom:12,lineHeight:1.6}}>
-            Pour chaque médicament, ajoutez un ou plusieurs <strong>régimes</strong> : une plage de dates et la dose à prendre matin / midi / soir. Une demi-dose est possible — tape <strong>½</strong>, <strong>0,5</strong> ou <strong>1/2</strong>. Pour une posologie qui change dans le temps (ex. chaque semaine), créez un régime par période. Le régime sans date de fin est « en cours ».
-          </p>
-          {settings.meds.map((m,i)=>{ const med = medOf(m); return (
-            <div key={i} style={{border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-md)",padding:"12px",marginBottom:12}}>
-              <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10,flexWrap:"wrap"}}>
-                <input value={med.name} onChange={e=>updateMed(i,{name:e.target.value})} placeholder="Nom du médicament" style={{flex:"1 1 160px",fontWeight:500}}/>
-                <input value={med.note} onChange={e=>updateMed(i,{note:e.target.value})} placeholder="note (ex. à jeun)" style={{flex:"1 1 120px",fontSize:12}}/>
-                <button onClick={()=>setConfirmDel(i)} title="Supprimer ce médicament" style={{color:"var(--color-text-danger)",padding:"6px 10px"}}>
-                  <i className="ti ti-trash" aria-hidden="true"></i>
-                </button>
-              </div>
-
-              <div style={{display:"grid",gridTemplateColumns:"auto auto repeat(3,minmax(60px,1fr)) auto",gap:6,alignItems:"center",fontSize:11,color:"var(--color-text-secondary)"}}>
-                <span style={{fontWeight:500}}>Début</span>
-                <span style={{fontWeight:500}}>Fin</span>
-                <span style={{fontWeight:500,textAlign:"center"}}>Matin</span>
-                <span style={{fontWeight:500,textAlign:"center"}}>Midi</span>
-                <span style={{fontWeight:500,textAlign:"center"}}>Soir</span>
-                <span></span>
-                {med.regimens.map((r,ri)=>(
-                  <Regimen key={ri} r={r} onChange={patch=>updateRegimen(i,ri,patch)} onDelete={()=>deleteRegimen(i,ri)} />
+          {isCapacitor && (<>
+            <div style={{borderTop:"0.5px solid var(--color-border-tertiary)",margin:"16px 0"}}></div>
+            <p style={{fontWeight:500,marginBottom:4,fontSize:14}}>Rappels de prise</p>
+            <p style={{color:"var(--color-text-secondary)",fontSize:11,marginBottom:12,lineHeight:1.6}}>
+              Reçois une notification chaque jour aux heures choisies pour penser à tes prises (mobile uniquement).
+            </p>
+            <label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,marginBottom:10,cursor:"pointer"}}>
+              <input type="checkbox" checked={!!settings.reminders?.enabled} onChange={e=>updateReminders({enabled:e.target.checked})}/>
+              Activer les rappels quotidiens
+            </label>
+            {settings.reminders?.enabled && (
+              <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>
+                {[["matin","Matin"],["midi","Midi"],["soir","Soir"]].map(([k,L])=>(
+                  <label key={k} style={{fontSize:12,color:"var(--color-text-secondary)",display:"flex",flexDirection:"column",gap:4}}>
+                    {L}
+                    <input type="time" value={settings.reminders?.[k] || ""} onChange={e=>updateReminders({[k]:e.target.value})} style={{fontSize:13}}/>
+                  </label>
                 ))}
               </div>
-              <button onClick={()=>addRegimen(i)} style={{marginTop:10,display:"flex",alignItems:"center",gap:6,fontSize:12}}>
-                <i className="ti ti-plus" aria-hidden="true"></i> Ajouter un régime
-              </button>
-            </div>
-          );})}
-          <button onClick={addMed} style={{marginTop:4,display:"flex",alignItems:"center",gap:6}}>
-            <i className="ti ti-plus" aria-hidden="true"></i> Ajouter un médicament
-          </button>
-          {confirmDel!==null&&(
-            <div style={{marginTop:16,padding:"12px",background:"var(--color-background-danger)",border:"0.5px solid var(--color-border-danger)",borderRadius:"var(--border-radius-md)"}}>
-              <p style={{color:"var(--color-text-danger)",marginBottom:10,fontSize:13}}>Supprimer « {medOf(settings.meds[confirmDel]).name} » et toute sa posologie ?</p>
-              <div style={{display:"flex",gap:8}}>
-                <button onClick={()=>deleteMed(confirmDel)} style={{color:"var(--color-text-danger)"}}>Confirmer</button>
-                <button onClick={()=>setConfirmDel(null)}>Annuler</button>
-              </div>
-            </div>
-          )}
+            )}
+          </>)}
 
           {isElectron&&(
             <div style={{marginTop:24,paddingTop:16,borderTop:"0.5px solid var(--color-border-tertiary)"}}>
@@ -1034,20 +1161,72 @@ function MomentCell({P,T,onChange,cell=34}){
   );
 }
 
-// Une ligne de régime posologique dans l'éditeur (6 colonnes de la grille parente).
+// Un régime posologique : carte compacte (dates en haut, doses matin/midi/soir
+// en dessous) pour tenir sans débordement horizontal, y compris sur mobile.
 function Regimen({r,onChange,onDelete}){
-  const numStyle = {width:"100%",textAlign:"center",fontSize:12,padding:"5px 4px"};
+  const lbl = {fontSize:10,color:"var(--color-text-tertiary)",marginBottom:3,fontWeight:500,textTransform:"uppercase",letterSpacing:0.3};
+  const box = {display:"flex",flexDirection:"column",flex:"1 1 0",minWidth:0};
+  const doseStyle = {width:"100%",textAlign:"center",fontSize:13,padding:"6px 4px"};
   return(
-    <>
-      <input type="date" value={r.start||""} onChange={e=>onChange({start:e.target.value})} style={{fontSize:12,padding:"5px 6px"}}/>
-      <input type="date" value={r.end||""} onChange={e=>onChange({end:e.target.value||null})} style={{fontSize:12,padding:"5px 6px"}}/>
-      <DoseInput value={r.matin} onCommit={v=>onChange({matin:v})} style={numStyle}/>
-      <DoseInput value={r.midi}  onCommit={v=>onChange({midi:v})}  style={numStyle}/>
-      <DoseInput value={r.soir}  onCommit={v=>onChange({soir:v})}  style={numStyle}/>
-      <button onClick={onDelete} title="Supprimer ce régime" style={{color:"var(--color-text-danger)",padding:"4px 8px"}}>
-        <i className="ti ti-x" aria-hidden="true"></i>
+    <div style={{border:"0.5px solid var(--color-border-tertiary)",borderRadius:8,padding:"8px 10px",marginBottom:8,background:"var(--color-background-secondary)"}}>
+      <div style={{display:"flex",gap:8,alignItems:"flex-end",marginBottom:8}}>
+        <div style={box}><span style={lbl}>Début</span><input type="date" value={r.start||""} onChange={e=>onChange({start:e.target.value})} style={{fontSize:12,padding:"5px 6px",width:"100%"}}/></div>
+        <div style={box}><span style={lbl}>Fin</span><input type="date" value={r.end||""} onChange={e=>onChange({end:e.target.value||null})} style={{fontSize:12,padding:"5px 6px",width:"100%"}}/></div>
+        <button onClick={onDelete} title="Supprimer ce régime" style={{color:"var(--color-text-danger)",padding:"6px 8px",flex:"0 0 auto"}}>
+          <i className="ti ti-x" aria-hidden="true"></i>
+        </button>
+      </div>
+      <div style={{display:"flex",gap:8}}>
+        {[["matin","Matin"],["midi","Midi"],["soir","Soir"]].map(([k,L])=>(
+          <div key={k} style={box}>
+            <span style={lbl}>{L}</span>
+            <DoseInput value={r[k]} onCommit={v=>onChange({[k]:v})} style={doseStyle}/>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Bloc « Médicaments & posologie » (affiché sous la grille). Reçoit les
+// handlers de l'app parent pour rester sans état propre.
+function MedsPosology({ meds, updateMed, addMed, setConfirmDel, addRegimen, updateRegimen, deleteRegimen, confirmDel, deleteMed }){
+  return(
+    <div>
+      <p style={{fontWeight:500,marginBottom:4,fontSize:14}}>Médicaments &amp; posologie</p>
+      <p style={{color:"var(--color-text-secondary)",fontSize:11,marginBottom:12,lineHeight:1.6}}>
+        Pour chaque médicament, ajoutez un ou plusieurs <strong>régimes</strong> : une plage de dates et la dose matin / midi / soir. Une demi-dose est possible — tape <strong>½</strong>, <strong>0,5</strong> ou <strong>1/2</strong>. Pour une posologie qui change (ex. chaque semaine), créez un régime par période ; celui sans date de fin est « en cours ».
+      </p>
+      {meds.map((m,i)=>{ const med = medOf(m); return (
+        <div key={i} style={{border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-md)",padding:"12px",marginBottom:12}}>
+          <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10,flexWrap:"wrap"}}>
+            <input value={med.name} onChange={e=>updateMed(i,{name:e.target.value})} placeholder="Nom du médicament" style={{flex:"1 1 160px",fontWeight:500}}/>
+            <input value={med.note} onChange={e=>updateMed(i,{note:e.target.value})} placeholder="note (ex. à jeun)" style={{flex:"1 1 120px",fontSize:12}}/>
+            <button onClick={()=>setConfirmDel(i)} title="Supprimer ce médicament" style={{color:"var(--color-text-danger)",padding:"6px 10px"}}>
+              <i className="ti ti-trash" aria-hidden="true"></i>
+            </button>
+          </div>
+          {med.regimens.map((r,ri)=>(
+            <Regimen key={ri} r={r} onChange={patch=>updateRegimen(i,ri,patch)} onDelete={()=>deleteRegimen(i,ri)} />
+          ))}
+          <button onClick={()=>addRegimen(i)} style={{marginTop:2,display:"flex",alignItems:"center",gap:6,fontSize:12}}>
+            <i className="ti ti-plus" aria-hidden="true"></i> Ajouter un régime
+          </button>
+        </div>
+      );})}
+      <button onClick={addMed} style={{marginTop:4,display:"flex",alignItems:"center",gap:6}}>
+        <i className="ti ti-plus" aria-hidden="true"></i> Ajouter un médicament
       </button>
-    </>
+      {confirmDel!==null && meds[confirmDel] && (
+        <div style={{marginTop:16,padding:"12px",background:"var(--color-background-danger)",border:"0.5px solid var(--color-border-danger)",borderRadius:"var(--border-radius-md)"}}>
+          <p style={{color:"var(--color-text-danger)",marginBottom:10,fontSize:13}}>Supprimer « {medOf(meds[confirmDel]).name} » et toute sa posologie ?</p>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={()=>deleteMed(confirmDel)} style={{color:"var(--color-text-danger)"}}>Confirmer</button>
+            <button onClick={()=>setConfirmDel(null)}>Annuler</button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
