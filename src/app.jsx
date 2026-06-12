@@ -16,27 +16,64 @@ const sync = {
   push:    () => isElectron ? window.electronAPI.gdrivePush()    : gdriveMobile.push(),
 };
 
-// Rappels de prise (mobile) : replanifie 3 notifications quotidiennes répétées
-// (matin/midi/soir) aux heures choisies, ou les annule si désactivé.
-async function applyReminders(reminders){
+// Fenêtre de planification des rappels : nombre de jours couverts, et nombre de
+// rappels supplémentaires toutes les 5 min après l'heure prévue par moment.
+const REMINDER_WINDOW_DAYS = 3;
+const REMINDER_REPEATS = 12; // 12 rappels de 5 min = jusqu'à 1h après l'heure prévue
+
+// Rappels de prise (mobile) : pour chaque moment (matin/midi/soir) ayant une heure
+// configurée, planifie une notification à l'heure choisie puis, si la prise du jour
+// n'est pas encore notée, des rappels toutes les 5 min. Couvre les prochains jours
+// pour que les rappels survivent sans réouverture quotidienne de l'app.
+async function scheduleReminders(settings){
   if (!isCapacitor) return;
   let LN;
   try { ({ LocalNotifications: LN } = await import("@capacitor/local-notifications")); }
   catch { return; }
+
+  const allIds = [];
+  for (let day = 0; day < REMINDER_WINDOW_DAYS; day++)
+    for (let mi = 0; mi < MOMENTS.length; mi++)
+      for (let r = 0; r <= REMINDER_REPEATS; r++)
+        allIds.push(day * 100 + mi * 20 + r);
+
   try {
-    await LN.cancel({ notifications: [{ id: 1 }, { id: 2 }, { id: 3 }] }).catch(()=>{});
+    await LN.cancel({ notifications: allIds.map(id => ({ id })) }).catch(()=>{});
+    const reminders = settings?.reminders;
     if (!reminders?.enabled) return;
     const perm = await LN.requestPermissions();
     if (perm.display !== "granted") return;
-    const map = [["matin", 1, "Prise du matin"], ["midi", 2, "Prise du midi"], ["soir", 3, "Prise du soir"]];
+
+    const meds = (settings.meds || []).map(medOf);
+    const now = new Date();
+    const todayData = (await loadMonth(today.getFullYear(), today.getMonth()))[`d${today.getDate()}`];
+
     const items = [];
-    for (const [k, id, title] of map){
-      const t = reminders[k]; if (!t) continue;
-      const [h, mi] = String(t).split(":").map(Number);
-      if (isNaN(h) || isNaN(mi)) continue;
-      items.push({
-        id, title: "💊 " + title, body: "N'oublie pas ta prise de médicament.",
-        schedule: { on: { hour: h, minute: mi }, allowWhileIdle: true },
+    for (let day = 0; day < REMINDER_WINDOW_DAYS; day++) {
+      const dt = new Date(today.getFullYear(), today.getMonth(), today.getDate() + day);
+      const ds = dateStr(dt.getFullYear(), dt.getMonth(), dt.getDate());
+
+      MOMENTS.forEach((mo, mIdx) => {
+        const t = reminders[mo.key]; if (!t) return;
+        const [h, mi] = String(t).split(":").map(Number);
+        if (isNaN(h) || isNaN(mi)) return;
+
+        const prescribedIdx = [];
+        meds.forEach((med, i) => { if (prescribedDose(med, ds, mo.key) > 0) prescribedIdx.push(i); });
+        if (!prescribedIdx.length) return;
+
+        if (day === 0 && prescribedIdx.every(i => takenDose(todayData, i, mo.key) > 0)) return;
+
+        for (let r = 0; r <= REMINDER_REPEATS; r++) {
+          const at = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), h, mi + r * 5, 0, 0);
+          if (at <= now) continue;
+          items.push({
+            id: day * 100 + mIdx * 20 + r,
+            title: "💊 Prise du " + mo.label.toLowerCase(),
+            body: r === 0 ? "N'oublie pas ta prise de médicament." : "Rappel : prise pas encore notée.",
+            schedule: { at, allowWhileIdle: true },
+          });
+        }
       });
     }
     if (items.length) await LN.schedule({ notifications: items });
@@ -434,6 +471,12 @@ export default function App() {
   const [syncMsg,  setSyncMsg]  = useState("");
   const [saveStatus, setSaveStatus] = useState("saved");
   const saveTimer = useRef(null);
+  // Tirer pour rafraîchir (mobile)
+  const [pullDist, setPullDist] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   // Largeur de fenêtre → grille compacte sur petit écran (mobile).
   const [vw, setVw] = useState(typeof window !== "undefined" ? window.innerWidth : 1024);
   useEffect(() => {
@@ -452,7 +495,7 @@ export default function App() {
     (async () => {
       const s = await loadSettings();
       setSettings(s);
-      if (isCapacitor) applyReminders(s.reminders);
+      if (isCapacitor) scheduleReminders(s);
       const d = await loadMonth(year, month);
       setData(d);
       if (isElectron) {
@@ -465,7 +508,18 @@ export default function App() {
 
   useEffect(() => {
     loadMonth(year, month).then(setData);
-  }, [year, month]);
+  }, [year, month, refreshTick]);
+
+  // Au retour au premier plan (un nouveau jour a pu commencer), on replanifie
+  // la fenêtre de rappels avec les réglages courants.
+  useEffect(() => {
+    if (!isCapacitor) return;
+    let handle;
+    CapacitorApp.addListener("resume", () => scheduleReminders(settingsRef.current))
+      .then((h) => { handle = h; })
+      .catch(() => {});
+    return () => { if (handle) handle.remove(); };
+  }, []);
 
   // Envoi auto vers le Drive après une modification (débounce), si connecté
   const pushTimer = useRef(null);
@@ -528,6 +582,9 @@ export default function App() {
       persistData(year, month, next);
       return next;
     });
+    // Une prise du jour vient d'être (dé)cochée : recalcule les rappels (annule
+    // ceux du moment si tout est pris, ou les remet en place si décoché).
+    if (isToday(day)) scheduleReminders(settingsRef.current);
   }, [year, month, persistData]);
 
   const days = daysInMonth(year, month);
@@ -577,9 +634,56 @@ export default function App() {
 
   // ── Synchronisation Google Drive
   const reloadFromDisk = useCallback(async () => {
-    setSettings(await loadSettings());
+    const s = await loadSettings();
+    setSettings(s);
     setData(await loadMonth(year, month));
+    return s;
   }, [year, month]);
+
+  // Tirer pour rafraîchir (mobile) : récupère les dernières données depuis le Drive
+  // si connecté (réglages, rappels, prises modifiés sur un autre appareil), puis
+  // recharge tout depuis le stockage local et replanifie les rappels.
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      if (syncAvailable && gsync.connected) await sync.pull();
+      const s = await reloadFromDisk();
+      setRefreshTick(t => t + 1);
+      if (isCapacitor) scheduleReminders(s);
+      showToast("Données à jour");
+    } catch {
+      showToast("Échec de l'actualisation");
+    }
+    setRefreshing(false);
+  }, [gsync.connected, reloadFromDisk]);
+
+  // Geste « tirer pour rafraîchir » : actif quand on tire vers le bas en haut de l'écran.
+  useEffect(() => {
+    if (!isCapacitor) return;
+    const THRESHOLD = 70;
+    let startY = null;
+    const onTouchStart = (e) => {
+      startY = (window.scrollY <= 0 && !refreshing) ? e.touches[0].clientY : null;
+    };
+    const onTouchMove = (e) => {
+      if (startY === null) return;
+      const dist = e.touches[0].clientY - startY;
+      if (dist > 0) setPullDist(Math.min(dist, 120));
+    };
+    const onTouchEnd = () => {
+      if (startY === null) return;
+      setPullDist(d => { if (d > THRESHOLD) handleRefresh(); return 0; });
+      startY = null;
+    };
+    window.addEventListener("touchstart", onTouchStart, { passive: true });
+    window.addEventListener("touchmove", onTouchMove, { passive: true });
+    window.addEventListener("touchend", onTouchEnd, { passive: true });
+    return () => {
+      window.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchend", onTouchEnd);
+    };
+  }, [refreshing, handleRefresh]);
 
   const connectGoogle = async () => {
     setSyncBusy(true); setSyncMsg("Connexion à Google…");
@@ -617,8 +721,9 @@ export default function App() {
   const updateProfile = (patch) => saveSettings({ ...settings, profile: { ...(settings.profile||{}), ...patch } });
   const updateReminders = (patch) => {
     const r = { enabled:false, matin:"08:00", midi:"12:00", soir:"20:00", ...(settings.reminders||{}), ...patch };
-    saveSettings({ ...settings, reminders: r });
-    applyReminders(r);
+    const s = { ...settings, reminders: r };
+    saveSettings(s);
+    scheduleReminders(s);
   };
   const addMed = () => saveSettings({ ...settings, meds: [...settings.meds, { name: `Médicament ${settings.meds.length+1}`, note: "", regimens: [{ start: todayStr(), end: null, matin: 1, midi: 0, soir: 0 }] }] });
   const updateMed = (i, patch) => saveSettings({ ...settings, meds: settings.meds.map((m,idx)=> idx===i ? { ...medOf(m), ...patch } : m) });
@@ -704,7 +809,7 @@ export default function App() {
         return { month:m, rate:a.rate, prescribed:a.prescribed, taken:a.taken, missed:a.missed, extra:a.extra };
       }));
     });
-  }, [annualYear, settings.meds]);
+  }, [annualYear, settings.meds, refreshTick]);
 
   const annualMonths = annualData.filter(m => m.prescribed > 0 || m.taken > 0);
   const annualAvgRate = annualMonths.filter(m=>m.rate!=null).length
@@ -1177,6 +1282,26 @@ export default function App() {
               </p>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Indicateur « tirer pour rafraîchir » (mobile) */}
+      {isCapacitor && (pullDist>0 || refreshing) && (
+        <div style={{
+          position:"fixed",top:0,left:0,right:0,zIndex:999,display:"flex",justifyContent:"center",
+          pointerEvents:"none",
+          transform:`translateY(${refreshing ? 10 : Math.min(pullDist,70) - 60}px)`,
+          transition: refreshing ? "transform 0.2s" : "none"
+        }}>
+          <div style={{
+            display:"flex",alignItems:"center",gap:6,fontSize:12,color:"var(--color-text-info)",
+            background:"var(--color-background-info)",borderRadius:999,padding:"6px 14px",
+            boxShadow:"0 2px 6px rgba(0,0,0,0.15)"
+          }}>
+            <i className={`ti ${refreshing ? "ti-loader-2" : "ti-arrow-down"}`} aria-hidden="true"
+               style={{fontSize:14, transform: (!refreshing && pullDist>70) ? "rotate(180deg)" : "none", transition:"transform 0.2s"}}></i>
+            {refreshing ? "Actualisation…" : pullDist>70 ? "Relâchez pour actualiser" : "Tirez pour actualiser"}
+          </div>
         </div>
       )}
 
