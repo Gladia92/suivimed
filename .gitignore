@@ -159,3 +159,6 @@ keystore.properties
 
 # Récap local des secrets GitHub — NE JAMAIS committer
 SIGNING-SECRETS.txt
+
+# Réglages Claude Code personnels (non partagés)
+.claude/settings.local.json

@@ -23,16 +23,24 @@ const REMINDER_WINDOW_DAYS = 3;
 const REMINDER_REPEATS = 12; // 12 rappels de 5 min = jusqu'à 1h après l'heure prévue
 
 // Rappels de prise (mobile) : pour chaque moment (matin/midi/soir) ayant une heure
-// configurée, planifie une notification à l'heure choisie puis, si la prise du jour
-// n'est pas encore notée, des rappels toutes les 5 min. Couvre les prochains jours
-// pour que les rappels survivent sans réouverture quotidienne de l'app.
+// configurée, une alarme quotidienne native (cron `on`, qui survit même si l'app
+// n'est pas rouverte pendant des jours) + des relances toutes les 5 min tant que la
+// prise du jour n'est pas notée, sur une fenêtre de quelques jours.
+// Retourne un statut pour l'UI : "ok" | "inexact" | "no-permission" | "disabled" | "unavailable".
 async function scheduleReminders(settings){
-  if (!isCapacitor) return;
+  if (!isCapacitor) return "unavailable";
   let LN;
   try { ({ LocalNotifications: LN } = await import("@capacitor/local-notifications")); }
-  catch { return; }
+  catch { return "unavailable"; }
+
+  // Date recalculée à CHAQUE appel : le process Android peut vivre plusieurs jours,
+  // la constante de module `today` serait périmée — la fenêtre entière tomberait
+  // dans le passé et le cancel ci-dessous supprimerait les rappels sans remplaçants.
+  const now = new Date();
+  const base = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
   const allIds = [];
+  for (let mi = 0; mi < MOMENTS.length; mi++) allIds.push(1000 + mi);
   for (let day = 0; day < REMINDER_WINDOW_DAYS; day++)
     for (let mi = 0; mi < MOMENTS.length; mi++)
       for (let r = 0; r <= REMINDER_REPEATS; r++)
@@ -41,9 +49,9 @@ async function scheduleReminders(settings){
   try {
     await LN.cancel({ notifications: allIds.map(id => ({ id })) }).catch(()=>{});
     const reminders = settings?.reminders;
-    if (!reminders?.enabled) return;
+    if (!reminders?.enabled) return "disabled";
     const perm = await LN.requestPermissions();
-    if (perm.display !== "granted") return;
+    if (perm.display !== "granted") return "no-permission";
 
     // Canal dédié, importance max : son + vibration + affichage immédiat (effet "alarme"),
     // contrairement au canal par défaut qui peut rester silencieux.
@@ -57,40 +65,61 @@ async function scheduleReminders(settings){
     }).catch(()=>{});
 
     const meds = (settings.meds || []).map(medOf);
-    const now = new Date();
-    const todayData = (await loadMonth(today.getFullYear(), today.getMonth()))[`d${today.getDate()}`];
+    const todayData = (await loadMonth(base.getFullYear(), base.getMonth()))[`d${base.getDate()}`];
 
     const items = [];
-    for (let day = 0; day < REMINDER_WINDOW_DAYS; day++) {
-      const dt = new Date(today.getFullYear(), today.getMonth(), today.getDate() + day);
-      const ds = dateStr(dt.getFullYear(), dt.getMonth(), dt.getDate());
+    MOMENTS.forEach((mo, mIdx) => {
+      const t = reminders[mo.key]; if (!t) return;
+      const [h, mi] = String(t).split(":").map(Number);
+      if (isNaN(h) || isNaN(mi)) return;
 
-      MOMENTS.forEach((mo, mIdx) => {
-        const t = reminders[mo.key]; if (!t) return;
-        const [h, mi] = String(t).split(":").map(Number);
-        if (isNaN(h) || isNaN(mi)) return;
+      let anyPrescribed = false;
+      for (let day = 0; day < REMINDER_WINDOW_DAYS; day++) {
+        const dt = new Date(base.getFullYear(), base.getMonth(), base.getDate() + day);
+        const ds = dateStr(dt.getFullYear(), dt.getMonth(), dt.getDate());
 
         const prescribedIdx = [];
         meds.forEach((med, i) => { if (prescribedDose(med, ds, mo.key) > 0) prescribedIdx.push(i); });
-        if (!prescribedIdx.length) return;
+        if (!prescribedIdx.length) continue;
+        anyPrescribed = true;
 
-        if (day === 0 && prescribedIdx.every(i => takenDose(todayData, i, mo.key) > 0)) return;
+        if (day === 0 && prescribedIdx.every(i => takenDose(todayData, i, mo.key) > 0)) continue;
 
-        for (let r = 0; r <= REMINDER_REPEATS; r++) {
+        for (let r = 1; r <= REMINDER_REPEATS; r++) {
           const at = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), h, mi + r * 5, 0, 0);
           if (at <= now) continue;
           items.push({
             id: day * 100 + mIdx * 20 + r,
             title: "💊 Prise du " + mo.label.toLowerCase(),
-            body: r === 0 ? "N'oublie pas ta prise de médicament." : "Rappel : prise pas encore notée.",
+            body: "Rappel : prise pas encore notée.",
             schedule: { at, allowWhileIdle: true },
             channelId: "rappels_prises",
           });
         }
-      });
-    }
+      }
+
+      // Alarme de base : cron quotidien natif, indépendant de la fenêtre ci-dessus —
+      // continue de sonner chaque jour même si l'app n'est plus rouverte.
+      if (anyPrescribed) {
+        items.push({
+          id: 1000 + mIdx,
+          title: "💊 Prise du " + mo.label.toLowerCase(),
+          body: "N'oublie pas ta prise de médicament.",
+          schedule: { on: { hour: h, minute: mi }, allowWhileIdle: true },
+          channelId: "rappels_prises",
+        });
+      }
+    });
     if (items.length) await LN.schedule({ notifications: items });
-  } catch {}
+
+    // Android 14+ : les alarmes exactes sont refusées par défaut ; sans elles les
+    // rappels partent en retard (mode Doze). On remonte l'info à l'UI.
+    try {
+      const ex = await LN.checkExactNotificationSetting();
+      if (ex?.exact_alarm && ex.exact_alarm !== "granted") return "inexact";
+    } catch {}
+    return "ok";
+  } catch { return "unavailable"; }
 }
 
 // Les 3 moments de prise dans la journée.
@@ -520,6 +549,21 @@ export default function App() {
   const [refreshTick, setRefreshTick] = useState(0);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  // Statut de la dernière planification des rappels, pour avertir dans les réglages
+  // (permission notifications refusée, alarmes exactes non autorisées sur Android 14+).
+  const [reminderStatus, setReminderStatus] = useState("");
+  const replanReminders = useCallback((s) => {
+    if (!isCapacitor) return;
+    scheduleReminders(s).then(st => setReminderStatus(st || "")).catch(() => {});
+  }, []);
+  // Ouvre l'écran système « Alarmes et rappels » (Android 12+) puis replanifie.
+  const openExactAlarmSettings = useCallback(async () => {
+    try {
+      const { LocalNotifications: LN } = await import("@capacitor/local-notifications");
+      await LN.changeExactNotificationSetting();
+    } catch {}
+    replanReminders(settingsRef.current);
+  }, [replanReminders]);
   // Largeur de fenêtre → grille compacte sur petit écran (mobile).
   const [vw, setVw] = useState(typeof window !== "undefined" ? window.innerWidth : 1024);
   useEffect(() => {
@@ -546,7 +590,7 @@ export default function App() {
       }
       const s = await loadSettings();
       setSettings(s);
-      if (isCapacitor) scheduleReminders(s);
+      replanReminders(s);
       const d = await loadMonth(year, month);
       setData(d);
       if (isElectron) {
@@ -565,7 +609,7 @@ export default function App() {
   useEffect(() => {
     if (!isCapacitor) return;
     let handle;
-    CapacitorApp.addListener("resume", () => scheduleReminders(settingsRef.current))
+    CapacitorApp.addListener("resume", () => replanReminders(settingsRef.current))
       .then((h) => { handle = h; })
       .catch(() => {});
     return () => { if (handle) handle.remove(); };
@@ -619,10 +663,13 @@ export default function App() {
     try {
       await saveFile(fileKey(pending.y, pending.m), pending.data);
       setSaveStatus("saved");
+      // Replanifie APRÈS l'écriture : scheduleReminders relit le stockage, le faire
+      // avant (depuis setCell) lui ferait voir l'état d'avant la (dé)coche.
+      replanReminders(settingsRef.current);
     } catch {
       setSaveStatus("error");
     }
-  }, []);
+  }, [replanReminders]);
 
   const persistData = useCallback((y, m, newData) => {
     setSaveStatus("saving");
@@ -645,9 +692,8 @@ export default function App() {
       persistData(year, month, next);
       return next;
     });
-    // Une prise du jour vient d'être (dé)cochée : recalcule les rappels (annule
-    // ceux du moment si tout est pris, ou les remet en place si décoché).
-    if (isToday(day)) scheduleReminders(settingsRef.current);
+    // La replanification des rappels a lieu dans flushSave, une fois la coche
+    // réellement écrite (sinon scheduleReminders relirait l'état périmé).
   }, [year, month, persistData]);
 
   const days = daysInMonth(year, month);
@@ -727,7 +773,7 @@ export default function App() {
       }
       const s = await reloadFromDisk();
       setRefreshTick(t => t + 1);
-      if (isCapacitor) scheduleReminders(s);
+      replanReminders(s);
       showToast("Données à jour");
     } catch {
       showToast("Échec de l'actualisation");
@@ -810,7 +856,7 @@ export default function App() {
     const r = { enabled:false, matin:"08:00", midi:"12:00", soir:"20:00", ...(settings.reminders||{}), ...patch };
     const s = { ...settings, reminders: r };
     saveSettings(s);
-    scheduleReminders(s);
+    replanReminders(s);
   };
   const addMed = () => saveSettings({ ...settings, meds: [...settings.meds, { name: `Médicament ${settings.meds.length+1}`, note: "", regimens: [{ start: todayStr(), end: null, matin: 1, midi: 0, soir: 0 }] }] });
   const updateMed = (i, patch) => saveSettings({ ...settings, meds: settings.meds.map((m,idx)=> idx===i ? { ...medOf(m), ...patch } : m) });
@@ -1351,6 +1397,23 @@ export default function App() {
                     <input type="time" value={settings.reminders?.[k] || ""} onChange={e=>updateReminders({[k]:e.target.value})} style={{fontSize:13}}/>
                   </label>
                 ))}
+              </div>
+            )}
+            {settings.reminders?.enabled && reminderStatus === "no-permission" && (
+              <p style={{color:"var(--color-text-danger, #dc2626)",fontSize:12,marginTop:10,lineHeight:1.5}}>
+                ⚠️ Les notifications sont bloquées par Android : aucun rappel ne peut sonner.
+                Autorise-les dans Réglages Android → Applications → SuiviMed → Notifications.
+              </p>
+            )}
+            {settings.reminders?.enabled && reminderStatus === "inexact" && (
+              <div style={{marginTop:10}}>
+                <p style={{color:"var(--color-text-danger, #dc2626)",fontSize:12,marginBottom:6,lineHeight:1.5}}>
+                  ⚠️ Android n'autorise pas les alarmes exactes : les rappels peuvent arriver
+                  en retard (voire très en retard quand le téléphone est en veille).
+                </p>
+                <button onClick={openExactAlarmSettings} style={{fontSize:12}}>
+                  Autoriser les alarmes exactes
+                </button>
               </div>
             )}
           </>)}
