@@ -52,6 +52,8 @@ const MOMENTS = [
 
 const MONTHS       = ["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
 const MONTHS_SHORT = ["Jan","Fév","Mar","Avr","Mai","Jui","Jul","Aoû","Sep","Oct","Nov","Déc"];
+const WEEKDAYS      = ["dimanche","lundi","mardi","mercredi","jeudi","vendredi","samedi"];
+const WEEKDAYS_MINI = ["D","L","M","M","J","V","S"];
 const today = new Date();
 
 function daysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
@@ -439,6 +441,11 @@ export default function App() {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
+  // Durée d'affichage de la grille : « day » (jour), « week » (semaine), « month » (mois).
+  const [period, setPeriod] = useState("day");
+  const [selDay, setSelDay] = useState(today.getDate());
+  // Garde le jour sélectionné valide quand on change de mois.
+  useEffect(() => { setSelDay(s => Math.min(Math.max(1, s), daysInMonth(year, month))); }, [year, month]);
 
   // Init
   useEffect(() => {
@@ -706,8 +713,47 @@ export default function App() {
   const annualMissed = annualData.reduce((s,m)=>s+m.missed,0);
 
   const compact = vw < 600;            // mobile / petit écran
-  const CELL    = compact ? 26 : 34;
   const LABEL_W = compact ? 104 : 190;
+  const CELL    = period === "week" ? (compact ? 40 : 48) : (compact ? 26 : 34);
+
+  // Plage de jours visible selon la durée d'affichage choisie.
+  const maxWeek = Math.max(0, Math.ceil(days / 7) - 1);
+  const weekIdx = Math.min(maxWeek, Math.floor((selDay - 1) / 7));
+  const visDays =
+    period === "day"  ? [Math.min(Math.max(1, selDay), days)]
+    : period === "week" ? Array.from({ length: Math.min(7, days - weekIdx * 7) }, (_, k) => weekIdx * 7 + 1 + k)
+    : cols;
+
+  const prevPeriod = () => {
+    if (period === "month") return prevMonth();
+    if (period === "day") {
+      if (selDay > 1) return setSelDay(selDay - 1);
+      const pm = month === 0 ? 11 : month - 1, py = month === 0 ? year - 1 : year;
+      setYear(py); setMonth(pm); setSelDay(daysInMonth(py, pm));
+    } else {
+      if (weekIdx > 0) return setSelDay((weekIdx - 1) * 7 + 1);
+      const pm = month === 0 ? 11 : month - 1, py = month === 0 ? year - 1 : year;
+      const pd = daysInMonth(py, pm);
+      setYear(py); setMonth(pm); setSelDay((Math.ceil(pd / 7) - 1) * 7 + 1);
+    }
+  };
+  const nextPeriod = () => {
+    if (period === "month") return nextMonth();
+    if (period === "day") {
+      if (selDay < days) return setSelDay(selDay + 1);
+      const nm = month === 11 ? 0 : month + 1, ny = month === 11 ? year + 1 : year;
+      setYear(ny); setMonth(nm); setSelDay(1);
+    } else {
+      if (weekIdx < maxWeek) return setSelDay((weekIdx + 1) * 7 + 1);
+      const nm = month === 11 ? 0 : month + 1, ny = month === 11 ? year + 1 : year;
+      setYear(ny); setMonth(nm); setSelDay(1);
+    }
+  };
+  const goToday = () => { setYear(today.getFullYear()); setMonth(today.getMonth()); setSelDay(today.getDate()); };
+  const rangeLabel =
+    period === "day"  ? `${WEEKDAYS[new Date(year, month, visDays[0]).getDay()]} ${visDays[0]} ${MONTHS[month]} ${year}`
+    : period === "week" ? `${visDays[0]}–${visDays[visDays.length - 1]} ${MONTHS_SHORT[month]} ${year}`
+    : `${MONTHS[month]} ${year}`;
 
   const tabs = [
     {id:"grid",      icon:"ti-table",          label:"Grille"},
@@ -756,8 +802,8 @@ export default function App() {
         ))}
       </div>
 
-      {/* Month nav */}
-      {(view==="grid"||view==="observance")&&(
+      {/* Month nav (observance) */}
+      {view==="observance"&&(
         <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:14}}>
           <button onClick={prevMonth}><i className="ti ti-arrow-left" aria-hidden="true"></i></button>
           <span style={{fontWeight:500,minWidth:140,textAlign:"center"}}>{MONTHS[month]} {year}</span>
@@ -768,20 +814,40 @@ export default function App() {
       {/* GRID */}
       {view==="grid"&&(
         <>
+          {/* Durée d'affichage + navigation */}
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14,flexWrap:"wrap"}}>
+            <div style={{display:"inline-flex",background:"var(--color-background-secondary)",borderRadius:999,padding:3,gap:2}}>
+              {[["day","Jour"],["week","Semaine"],["month","Mois"]].map(([p,L])=>(
+                <button key={p} onClick={()=>setPeriod(p)} style={{padding:"5px 14px",fontSize:12,borderRadius:999,border:"none",cursor:"pointer",background:period===p?"var(--color-background-primary)":"transparent",color:period===p?"var(--color-text-info)":"var(--color-text-secondary)",fontWeight:period===p?600:400,boxShadow:period===p?"0 1px 2px rgba(0,0,0,0.08)":"none"}}>{L}</button>
+              ))}
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:8,flex:1,justifyContent:"center"}}>
+              <button onClick={prevPeriod} aria-label="Précédent"><i className="ti ti-chevron-left" aria-hidden="true"></i></button>
+              <span style={{fontWeight:500,minWidth:compact?120:170,textAlign:"center",textTransform:"capitalize",fontSize:13}}>{rangeLabel}</span>
+              <button onClick={nextPeriod} aria-label="Suivant"><i className="ti ti-chevron-right" aria-hidden="true"></i></button>
+            </div>
+            <button onClick={goToday} style={{fontSize:12,padding:"5px 10px",display:"flex",alignItems:"center",gap:5}}><i className="ti ti-calendar-event" aria-hidden="true"></i> Aujourd'hui</button>
+          </div>
+
           {meds.length === 0 && (
             <p style={{color:"var(--color-text-secondary)",textAlign:"center",margin:"24px 0"}}>
               Ajoute ton premier médicament ci-dessous pour commencer le suivi.
             </p>
           )}
-          {meds.length > 0 && (<>
+          {meds.length > 0 && period === "day" && (
+            <DayView meds={meds} data={data} year={year} month={month} day={visDays[0]} onToggle={setCell} />
+          )}
+          {meds.length > 0 && period !== "day" && (<>
           <div style={{overflowX:"auto",borderRadius:"var(--border-radius-lg)",border:"0.5px solid var(--color-border-tertiary)",width:"fit-content",maxWidth:"100%",margin:"0 auto"}}>
-            <table style={{borderCollapse:"collapse",tableLayout:"fixed",width:LABEL_W+days*CELL+"px"}}>
+            <table style={{borderCollapse:"collapse",tableLayout:"fixed",width:LABEL_W+visDays.length*CELL+"px"}}>
               <thead>
                 <tr style={{background:"var(--color-background-secondary)"}}>
                   <th style={{width:LABEL_W,padding:compact?"6px 6px":"6px 10px",textAlign:"left",fontWeight:500,borderRight:"0.5px solid var(--color-border-tertiary)",position:"sticky",left:0,background:"var(--color-background-secondary)",zIndex:2,fontSize:compact?11:12}}>{compact?"Méd. / moment":"Médicament / moment"}</th>
-                  {cols.map(d=>(
-                    <th key={d} style={{width:CELL,textAlign:"center",fontWeight:isToday(d)?500:400,fontSize:11,padding:"6px 0",color:isToday(d)?"var(--color-text-info)":"var(--color-text-secondary)",borderLeft:"0.5px solid var(--color-border-tertiary)"}}>
-                      {d}
+                  {visDays.map(d=>(
+                    <th key={d} style={{width:CELL,textAlign:"center",fontWeight:isToday(d)?600:400,fontSize:11,padding:"6px 0",color:isToday(d)?"var(--color-text-info)":"var(--color-text-secondary)",borderLeft:"0.5px solid var(--color-border-tertiary)"}}>
+                      {period==="week"
+                        ? <><div style={{fontSize:10,opacity:0.7}}>{WEEKDAYS_MINI[new Date(year,month,d).getDay()]}</div><div>{d}</div></>
+                        : d}
                     </th>
                   ))}
                 </tr>
@@ -793,14 +859,14 @@ export default function App() {
                       <i className="ti ti-pill" style={{fontSize:12,marginRight:5,color:"var(--color-text-info)"}} aria-hidden="true"></i>
                       {row.name}{row.note && <span style={{fontWeight:400,color:"var(--color-text-tertiary)"}}> · {row.note}</span>}
                     </td>
-                    {cols.map(d=><td key={d} style={{borderLeft:"0.5px solid var(--color-border-tertiary)",background:"var(--color-background-secondary)"}} />)}
+                    {visDays.map(d=><td key={d} style={{borderLeft:"0.5px solid var(--color-border-tertiary)",background:"var(--color-background-secondary)"}} />)}
                   </tr>
                 ) : (
                   <tr key={row.key}>
                     <td style={{padding:compact?"3px 4px 3px 10px":"3px 10px 3px 24px",borderRight:"0.5px solid var(--color-border-tertiary)",position:"sticky",left:0,background:"var(--color-background-primary)",zIndex:1,whiteSpace:"nowrap",fontSize:compact?11:12,color:"var(--color-text-secondary)"}}>
                       <i className={`ti ${row.icon}`} style={{fontSize:12,marginRight:5}} aria-hidden="true"></i>{row.label}
                     </td>
-                    {cols.map(d=>{
+                    {visDays.map(d=>{
                       const ds = dateStr(year,month,d);
                       const med = meds[row.medIdx];
                       const P = prescribedDose(med, ds, row.momentKey);
@@ -1157,6 +1223,58 @@ function MomentCell({P,T,onChange,cell=34}){
     <button onClick={()=>onChange(taken ? 0 : 1)} title={title} aria-label="Prise de médicament"
       style={{width:cell-4,height:26,border:"none",background:bg,borderRadius:4,cursor:"pointer",color:col,fontWeight:700,fontSize:14,padding:0,lineHeight:1}}>
       {glyph}
+    </button>
+  );
+}
+
+// Vue « Jour » : checklist moderne en cartes, un gros bouton par moment de prise.
+function DayView({ meds, data, year, month, day, onToggle }){
+  const ds = dateStr(year, month, day);
+  const past = isPast(ds);
+  const dd = data[`d${day}`];
+  return (
+    <div style={{display:"grid",gap:12}}>
+      {meds.map((med,i)=>{
+        const moments = MOMENTS.filter(mo => prescribedDose(med, ds, mo.key) > 0 || takenDose(dd, i, mo.key) > 0);
+        return (
+          <div key={i} style={{border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"14px 16px",background:"var(--color-background-primary)"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:moments.length?12:0}}>
+              <i className="ti ti-pill" style={{fontSize:16,color:"var(--color-text-info)"}} aria-hidden="true"></i>
+              <span style={{fontWeight:600,fontSize:15}}>{med.name||"(sans nom)"}</span>
+              {med.note && <span style={{fontSize:12,color:"var(--color-text-tertiary)"}}>· {med.note}</span>}
+            </div>
+            {moments.length === 0
+              ? <p style={{fontSize:12,color:"var(--color-text-tertiary)",margin:0}}>Aucune prise prévue ce jour.</p>
+              : <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                  {moments.map(mo=>{
+                    const P = prescribedDose(med, ds, mo.key);
+                    const taken = takenDose(dd, i, mo.key) > 0;
+                    return <MomentToggle key={mo.key} mo={mo} P={P} taken={taken} past={past} onClick={()=>onToggle(day,i,mo.key, taken?0:1)} />;
+                  })}
+                </div>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Gros bouton tactile d'un moment de prise (vue Jour).
+function MomentToggle({ mo, P, taken, past, onClick }){
+  const prescribed = P > 0;
+  let bg, border, color, status, icon;
+  if (taken)                   { bg="rgba(59,109,17,0.10)"; border="var(--color-text-success)"; color="var(--color-text-success)"; status="Pris"; icon="ti-check"; }
+  else if (prescribed && past) { bg="var(--color-background-danger)"; border="var(--color-border-danger)"; color="var(--color-text-danger)"; status="Oublié"; icon="ti-x"; }
+  else if (prescribed)         { bg="var(--color-background-secondary)"; border="var(--color-border-info)"; color="var(--color-text-info)"; status="À prendre"; icon="ti-clock"; }
+  else                         { bg="var(--color-background-secondary)"; border="var(--color-border-tertiary)"; color="var(--color-text-tertiary)"; status="—"; icon="ti-minus"; }
+  return (
+    <button onClick={onClick} style={{flex:"1 1 0",minWidth:92,display:"flex",flexDirection:"column",alignItems:"center",gap:5,padding:"14px 10px",borderRadius:14,border:`1.5px solid ${border}`,background:bg,color,cursor:"pointer"}}>
+      <i className={`ti ${mo.icon}`} style={{fontSize:20}} aria-hidden="true"></i>
+      <span style={{fontSize:13,fontWeight:600}}>{mo.label}</span>
+      {prescribed && <span style={{fontSize:11,opacity:0.85}}>dose {fmtDose(P)}</span>}
+      <span style={{display:"flex",alignItems:"center",gap:4,fontSize:12,fontWeight:600,marginTop:2}}>
+        <i className={`ti ${icon}`} aria-hidden="true"></i>{status}
+      </span>
     </button>
   );
 }
