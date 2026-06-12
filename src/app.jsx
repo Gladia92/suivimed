@@ -511,6 +511,9 @@ export default function App() {
   const [syncMsg,  setSyncMsg]  = useState("");
   const [saveStatus, setSaveStatus] = useState("saved");
   const saveTimer = useRef(null);
+  const pendingSave = useRef(null);
+  // Modifications locales pas encore envoyées au Drive (édit depuis le dernier push réussi).
+  const dirtyRef = useRef(false);
   // Tirer pour rafraîchir (mobile)
   const [pullDist, setPullDist] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
@@ -574,7 +577,7 @@ export default function App() {
     if (!syncAvailable || !gsync.connected) return;
     if (pushTimer.current) clearTimeout(pushTimer.current);
     pushTimer.current = setTimeout(() => {
-      sync.push().then(res => markSynced(res?.remoteModifiedTime)).catch(()=>{});
+      sync.push().then(res => { dirtyRef.current = false; return markSynced(res?.remoteModifiedTime); }).catch(()=>{});
     }, 2500);
     return () => { if (pushTimer.current) clearTimeout(pushTimer.current); };
   }, [data, settings, gsync.connected]);
@@ -605,18 +608,29 @@ export default function App() {
     return () => { if (handle) handle.remove(); };
   }, []);
 
+  // Écrit immédiatement la sauvegarde de prises en attente (si une édition vient
+  // d'avoir lieu et que le debounce de 400 ms n'a pas encore eu lieu) — appelé
+  // avant un pull pour ne pas perdre une prise tout juste cochée.
+  const flushSave = useCallback(async () => {
+    clearTimeout(saveTimer.current);
+    const pending = pendingSave.current;
+    if (!pending) return;
+    pendingSave.current = null;
+    try {
+      await saveFile(fileKey(pending.y, pending.m), pending.data);
+      setSaveStatus("saved");
+    } catch {
+      setSaveStatus("error");
+    }
+  }, []);
+
   const persistData = useCallback((y, m, newData) => {
     setSaveStatus("saving");
+    dirtyRef.current = true;
     clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      try {
-        await saveFile(fileKey(y, m), newData);
-        setSaveStatus("saved");
-      } catch {
-        setSaveStatus("error");
-      }
-    }, 400);
-  }, []);
+    pendingSave.current = { y, m, data: newData };
+    saveTimer.current = setTimeout(flushSave, 400);
+  }, [flushSave]);
 
   // Met à jour la prise réelle d'un médicament pour un jour et un moment.
   const setCell = useCallback((day, medIdx, momentKey, val) => {
@@ -695,9 +709,21 @@ export default function App() {
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
+      // Sauvegarde immédiate d'une prise tout juste cochée (le debounce de 400 ms
+      // n'a peut-être pas encore eu lieu) pour ne pas la perdre avec le pull ci-dessous.
+      await flushSave();
       if (syncAvailable && gsync.connected) {
-        const res = await sync.pull();
-        await markSynced(res?.remoteModifiedTime);
+        if (dirtyRef.current) {
+          // Des modifications locales n'ont pas encore été envoyées : on les pousse
+          // avant de tirer, sinon le pull les écraserait avec une version plus ancienne.
+          if (pushTimer.current) clearTimeout(pushTimer.current);
+          const res = await sync.push();
+          dirtyRef.current = false;
+          await markSynced(res?.remoteModifiedTime);
+        } else {
+          const res = await sync.pull();
+          await markSynced(res?.remoteModifiedTime);
+        }
       }
       const s = await reloadFromDisk();
       setRefreshTick(t => t + 1);
@@ -707,7 +733,7 @@ export default function App() {
       showToast("Échec de l'actualisation");
     }
     setRefreshing(false);
-  }, [gsync.connected, reloadFromDisk]);
+  }, [gsync.connected, reloadFromDisk, flushSave]);
 
   // Geste « tirer pour rafraîchir » : actif quand on tire vers le bas en haut de l'écran.
   useEffect(() => {
@@ -745,6 +771,7 @@ export default function App() {
       const pulled = await sync.pull();
       if (pulled.empty) {
         const res = await sync.push();
+        dirtyRef.current = false;
         await markSynced(res?.remoteModifiedTime);
         setSyncMsg("Données envoyées sur ton Drive.");
       } else {
@@ -766,7 +793,9 @@ export default function App() {
   const syncNow = async () => {
     setSyncBusy(true); setSyncMsg("Synchronisation…");
     try {
+      await flushSave();
       const res = await sync.push();
+      dirtyRef.current = false;
       await markSynced(res?.remoteModifiedTime);
       setSyncMsg("Synchronisé à l'instant.");
     }
@@ -775,7 +804,7 @@ export default function App() {
   };
 
   // ── Réglages : profil & médicaments
-  const saveSettings = (s) => { setSettings(s); saveFile(settingsFile(), s); };
+  const saveSettings = (s) => { dirtyRef.current = true; setSettings(s); saveFile(settingsFile(), s); };
   const updateProfile = (patch) => saveSettings({ ...settings, profile: { ...(settings.profile||{}), ...patch } });
   const updateReminders = (patch) => {
     const r = { enabled:false, matin:"08:00", midi:"12:00", soir:"20:00", ...(settings.reminders||{}), ...patch };
