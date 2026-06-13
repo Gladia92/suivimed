@@ -1,27 +1,36 @@
-// Génère le son d'alarme des rappels de prise : un motif de bips forts et
-// répétés (effet « réveil ») d'environ 30 s, écrit en WAV PCM 16 bits mono.
-// Sortie : android/app/src/main/res/raw/alarme_prise.wav
+// Génère le son d'alarme des rappels de prise : un son DOUX et GRAVE, fait de
+// lentes montées/descentes (« swells ») plutôt que de bips secs. Écrit en WAV
+// PCM 16 bits mono. Sortie : android/app/src/main/res/raw/alarme_prise.wav
 //
 // Régénérer avec :  node tools/gen-alarm-wav.mjs
 //
-// Pourquoi un fichier de 30 s : une notification joue le son du canal une seule
-// fois, sur toute sa durée. Un clip de 30 s = 30 s de sonnerie par rappel, ce
-// qui donne un vrai effet d'alarme (et non un « ding » d'une seconde).
+// ▶ Réglages à ajuster (tout est ici) :
+//   - F0           : hauteur du son (Hz). Plus bas = plus grave. ~120–200 Hz =
+//                    grave et doux. ⚠️ trop bas (< ~120 Hz) devient faible sur
+//                    les petits haut-parleurs de téléphone.
+//   - AMPLITUDE    : volume relatif du timbre (0–1). Bas = plus doux.
+//   - SWELL/GAP    : durées de la montée-descente et du silence entre deux.
+//
+// Pourquoi un fichier de 30 s : une lecture joue le son sur toute sa durée → ~30 s
+// de sonnerie par rappel. Le son est volontairement bouclé proprement.
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const SAMPLE_RATE = 16000;        // Hz (suffisant pour une alarme, fichier compact)
-const DURATION_S  = 30;           // durée totale du clip
-const AMPLITUDE   = 0.92;         // proche du max, alarme volontairement forte
+const SAMPLE_RATE = 22050;   // Hz (un peu plus haut = grave plus propre)
+const DURATION_S  = 30;      // durée totale du clip
+const F0          = 150;     // fréquence fondamentale (Hz) — grave et doux
+const AMPLITUDE   = 0.55;    // < 0.92 de l'ancienne version : plus doux, plus de marge
 
-// Motif : deux bips rapprochés aigus puis une courte pause — répété (type sonnerie d'alerte).
-// Séquence (secondes) : [fréquence Hz, durée]. freq 0 = silence.
-const PATTERN = [
-  [1318, 0.20], [0, 0.08],
-  [1318, 0.20], [0, 0.08],
-  [988,  0.24], [0, 0.45],
-];
+// Un cycle = une lente montée/descente (SWELL) suivie d'un silence (GAP).
+const SWELL_S = 2.6;         // durée de la note (montée + tenue + descente)
+const GAP_S   = 1.2;         // silence entre deux notes
+const FADE_S  = 0.8;         // durée des fondus d'entrée/sortie (douceur, pas de clic)
+
+// Un peu d'harmonique d'octave, à faible niveau, pour que le grave reste audible
+// sur les petits haut-parleurs sans durcir le timbre.
+const H2_GAIN = 0.30;        // niveau de l'octave (2·F0)
+const H3_GAIN = 0.08;        // niveau de la quinte au-dessus (3·F0), très discret
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUT = resolve(__dirname, "../android/app/src/main/res/raw/alarme_prise.wav");
@@ -29,20 +38,35 @@ const OUT = resolve(__dirname, "../android/app/src/main/res/raw/alarme_prise.wav
 const totalSamples = Math.floor(SAMPLE_RATE * DURATION_S);
 const samples = new Int16Array(totalSamples);
 
-let idx = 0;
-let phase = 0;
-while (idx < totalSamples) {
-  for (const [freq, dur] of PATTERN) {
-    const n = Math.floor(SAMPLE_RATE * dur);
-    for (let i = 0; i < n && idx < totalSamples; i++, idx++) {
-      if (freq === 0) { samples[idx] = 0; continue; }
-      phase += (2 * Math.PI * freq) / SAMPLE_RATE;
-      // Petite enveloppe d'attaque/relâche pour éviter les clics secs en début/fin de bip.
-      const env = Math.min(1, i / 80, (n - i) / 80);
-      samples[idx] = Math.round(Math.sin(phase) * AMPLITUDE * env * 32767);
+const cycleS = SWELL_S + GAP_S;
+const TWO_PI = 2 * Math.PI;
+
+for (let n = 0; n < totalSamples; n++) {
+  const t = n / SAMPLE_RATE;          // temps absolu
+  const ct = t % cycleS;              // position dans le cycle courant
+
+  let env = 0;                        // enveloppe d'amplitude (0 pendant le silence)
+  if (ct < SWELL_S) {
+    if (ct < FADE_S) {
+      // Fondu d'entrée en cosinus surélevé (très doux, aucun clic).
+      env = 0.5 * (1 - Math.cos(Math.PI * (ct / FADE_S)));
+    } else if (ct > SWELL_S - FADE_S) {
+      // Fondu de sortie symétrique.
+      env = 0.5 * (1 - Math.cos(Math.PI * ((SWELL_S - ct) / FADE_S)));
+    } else {
+      env = 1; // tenue
     }
-    if (idx >= totalSamples) break;
   }
+
+  if (env <= 0) { samples[n] = 0; continue; }
+
+  const ph = TWO_PI * F0 * t;
+  let s = Math.sin(ph)
+        + H2_GAIN * Math.sin(2 * ph)
+        + H3_GAIN * Math.sin(3 * ph);
+  s = s / (1 + H2_GAIN + H3_GAIN);     // normalise pour rester dans [-1, 1]
+
+  samples[n] = Math.round(s * env * AMPLITUDE * 32767);
 }
 
 // En-tête WAV (RIFF / PCM 16 bits mono)
@@ -65,4 +89,4 @@ for (let i = 0; i < samples.length; i++) buf.writeInt16LE(samples[i], 44 + i * 2
 
 mkdirSync(dirname(OUT), { recursive: true });
 writeFileSync(OUT, buf);
-console.log(`Écrit ${OUT} (${(buf.length / 1024).toFixed(0)} Ko, ${DURATION_S}s @ ${SAMPLE_RATE}Hz)`);
+console.log(`Écrit ${OUT} (${(buf.length / 1024).toFixed(0)} Ko, ${DURATION_S}s @ ${SAMPLE_RATE}Hz, F0=${F0}Hz)`);
