@@ -28,3 +28,16 @@ export async function openFullScreenSettings() {
   if (!isNative()) return;
   try { await Alarm.openFullScreenIntentSettings(); } catch {}
 }
+
+// Exemption d'optimisation batterie (Doze) : sans elle, le système peut différer
+// l'alarme quand le téléphone reste posé longtemps.
+export async function isBatteryUnrestricted() {
+  if (!isNative()) return true;
+  try { const r = await Alarm.isIgnoringBatteryOptimizations(); return r?.granted !== false; }
+  catch { return true; }
+}
+
+export async function requestBatteryUnrestricted() {
+  if (!isNative()) return;
+  try { await Alarm.requestIgnoreBatteryOptimizations(); } catch {}
+}

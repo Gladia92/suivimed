@@ -5,6 +5,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
+import android.os.PowerManager;
 import android.provider.Settings;
 
 import com.getcapacitor.JSArray;
@@ -67,6 +68,37 @@ public class AlarmPlugin extends Plugin {
             call.resolve();
         } catch (Exception e) {
             call.reject("Impossible d'ouvrir les réglages", e);
+        }
+    }
+
+    // L'app est-elle exemptée de l'optimisation batterie (Doze) ? Sans ça, le
+    // système peut différer les alarmes quand le téléphone reste posé longtemps.
+    @PluginMethod
+    public void isIgnoringBatteryOptimizations(PluginCall call) {
+        boolean granted = true;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
+            granted = pm != null && pm.isIgnoringBatteryOptimizations(getContext().getPackageName());
+        }
+        JSObject ret = new JSObject();
+        ret.put("granted", granted);
+        call.resolve(ret);
+    }
+
+    // Ouvre la boîte de dialogue système « Autoriser l'activité en arrière-plan /
+    // ignorer l'optimisation batterie » pour cette app.
+    @PluginMethod
+    public void requestIgnoreBatteryOptimizations(PluginCall call) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Intent i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                i.setData(Uri.parse("package:" + getContext().getPackageName()));
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(i);
+            }
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Impossible d'ouvrir la demande d'exemption batterie", e);
         }
     }
 }

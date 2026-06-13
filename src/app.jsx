@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { App as CapacitorApp } from "@capacitor/app";
 import * as gdriveMobile from "./gdrive-mobile.js";
-import { setAlarms, cancelAlarms, canUseFullScreen, openFullScreenSettings } from "./native-alarm.js";
+import { setAlarms, cancelAlarms, canUseFullScreen, openFullScreenSettings, isBatteryUnrestricted, requestBatteryUnrestricted } from "./native-alarm.js";
 
 // ── Electron bridge (falls back to localStorage in browser dev)
 const isElectron = !!window.electronAPI;
@@ -567,9 +567,15 @@ export default function App() {
   // Statut de la dernière planification des rappels, pour avertir dans les réglages
   // (permission notifications refusée, alarmes exactes non autorisées sur Android 14+).
   const [reminderStatus, setReminderStatus] = useState("");
+  // Fiabilité de l'alarme : l'app est-elle exemptée de l'optimisation batterie (Doze) ?
+  const [batteryOk, setBatteryOk] = useState(true);
   const replanReminders = useCallback((s) => {
     if (!isCapacitor) return;
     scheduleReminders(s).then(st => setReminderStatus(st || "")).catch(() => {});
+    // En mode alarme, vérifie l'exemption batterie (sinon l'alarme peut être différée).
+    const alarmMode = s?.reminders?.enabled && (s.reminders.mode ?? "alarm") === "alarm";
+    if (alarmMode) isBatteryUnrestricted().then(setBatteryOk).catch(() => {});
+    else setBatteryOk(true);
   }, []);
   // Ouvre l'écran système « Alarmes et rappels » (Android 12+) puis replanifie.
   const openExactAlarmSettings = useCallback(async () => {
@@ -582,6 +588,11 @@ export default function App() {
   // Ouvre l'écran « Notifications plein écran » (Android 14+) puis replanifie.
   const openFullScreen = useCallback(async () => {
     await openFullScreenSettings();
+    replanReminders(settingsRef.current);
+  }, [replanReminders]);
+  // Demande l'exemption d'optimisation batterie (boîte de dialogue système) puis replanifie.
+  const askBatteryExemption = useCallback(async () => {
+    await requestBatteryUnrestricted();
     replanReminders(settingsRef.current);
   }, [replanReminders]);
   // Largeur de fenêtre → grille compacte sur petit écran (mobile).
@@ -877,6 +888,13 @@ export default function App() {
     const s = { ...settings, reminders: r };
     saveSettings(s);
     replanReminders(s);
+    // « Par défaut » : au moment où on active les rappels (ou passe en mode alarme),
+    // demande d'emblée l'exemption batterie pour que l'alarme soit fiable — sauf si
+    // déjà accordée. Ne se déclenche que sur ces actions délibérées, pas à chaque
+    // changement d'heure.
+    if (r.enabled && (r.mode ?? "alarm") === "alarm" && (patch.enabled === true || patch.mode === "alarm")) {
+      isBatteryUnrestricted().then(ok => { if (!ok) requestBatteryUnrestricted(); });
+    }
   };
   const addMed = () => saveSettings({ ...settings, meds: [...settings.meds, { name: `Médicament ${settings.meds.length+1}`, note: "", regimens: [{ start: todayStr(), end: null, matin: 1, midi: 0, soir: 0 }] }] });
   const updateMed = (i, patch) => saveSettings({ ...settings, meds: settings.meds.map((m,idx)=> idx===i ? { ...medOf(m), ...patch } : m) });
@@ -1443,6 +1461,16 @@ export default function App() {
                 </p>
                 <button onClick={openFullScreen} style={{fontSize:12}}>
                   Autoriser le plein écran
+                </button>
+              </div>
+            )}
+            {settings.reminders?.enabled && (settings.reminders?.mode ?? "alarm") === "alarm" && !batteryOk && (
+              <div style={{marginTop:10}}>
+                <p style={{color:"var(--color-text-danger, #dc2626)",fontSize:12,marginBottom:6,lineHeight:1.5}}>
+                  ⚠️ Pour que l'alarme sonne à l'heure même téléphone posé longtemps, autorise l'app à fonctionner sans restriction de batterie.
+                </p>
+                <button onClick={askBatteryExemption} style={{fontSize:12}}>
+                  Optimiser la fiabilité de l'alarme
                 </button>
               </div>
             )}

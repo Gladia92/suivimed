@@ -78,4 +78,7 @@
     <!-- Alarme plein écran qui réveille l'écran (mode « alarme ») -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Fiabilité : exemption de l'optimisation batterie (Doze) pour ne pas différer l'alarme -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 </manifest>
