@@ -579,10 +579,27 @@ function buildPdfHtml(year, month, data, settings, aiResult) {
     return `<tr><td style="font-size:12px;padding:4px 8px 4px 18px;border:0.5px solid #ccc;white-space:nowrap;color:#555">${row.label}</td>${cells}</tr>`;
   }).join("");
 
-  const synRows = adh.perMed.filter(m => m.prescribed > 0 || m.taken > 0).map(m =>
-    `<tr><td style="padding:3px 12px 3px 0;color:#555">${m.name}</td><td>${m.rate !== null ? m.rate + "% d'observance" : "n/a"} — ${m.prescribed} prévue(s), ${m.taken} réelle(s), ${m.missed} oubli(s)${m.extra ? `, ${m.extra} en plus` : ""}</td></tr>`).join("");
+  const dStats  = dailyStats(data, settings.meds, year, month);
+  const worstMo = worstMoment(adh.byMoment);
+  const synRow  = (label, val) => `<tr><td style="padding:3px 16px 3px 0;color:#555">${label}</td><td style="font-weight:600">${val}</td></tr>`;
+  const momentRows = MOMENTS.map(mo => {
+    const b = adh.byMoment[mo.key];
+    if (!b || b.due === 0) return "";
+    const r = Math.round(b.taken / b.due * 100);
+    return synRow(mo.label, `${r}% d'observance — ${b.taken}/${b.due} prise(s), ${b.missed} oubli(s)`);
+  }).join("");
+  const perMedRows = adh.perMed.filter(m => m.prescribed > 0 || m.taken > 0).map(m =>
+    synRow(m.name, `${m.rate !== null ? m.rate + "% d'observance" : "n/a"} — ${m.prescribed} prévue(s), ${m.taken} réelle(s), ${m.missed} oubli(s)${m.extra ? `, ${m.extra} en plus` : ""}`)).join("");
+  const subTable = (title, rows) => rows ? `<h4 style="font-size:14px;color:#333;margin:16px 0 8px">${title}</h4><table style="font-size:14px;border-collapse:collapse">${rows}</table>` : "";
   const synHtml = (adh.prescribed > 0 || adh.taken > 0)
-    ? `<div style="margin-top:24px"><h3 style="font-size:17px;color:#185FA5;margin-bottom:10px">Observance — ${MONTHS[month]} ${year}</h3><table style="font-size:14px;border-collapse:collapse"><tr><td style="padding:3px 12px 3px 0;color:#555">Observance globale</td><td>${adh.rate !== null ? adh.rate + "%" : "n/a"}</td></tr><tr><td style="padding:3px 12px 3px 0;color:#555">Prises prévues / réelles</td><td>${adh.prescribed} / ${adh.taken}</td></tr><tr><td style="padding:3px 12px 3px 0;color:#555">Oublis / en plus</td><td>${adh.missed} / ${adh.extra}</td></tr>${synRows}</table></div>`
+    ? `<div style="margin-top:24px"><h3 style="font-size:17px;color:#185FA5;margin-bottom:10px">Observance — ${MONTHS[month]} ${year}</h3><table style="font-size:14px;border-collapse:collapse">${
+        synRow("Observance globale", adh.rate !== null ? adh.rate + "%" : "n/a") +
+        synRow("Prises prévues / réelles", `${adh.prescribed} / ${adh.taken}`) +
+        synRow("Oublis / en plus", `${adh.missed} / ${adh.extra}`) +
+        synRow("Jours parfaits", `${dStats.perfect} / ${dStats.activeDays}`) +
+        synRow("Meilleure série", `${dStats.bestStreak} jour${dStats.bestStreak > 1 ? "s" : ""}`) +
+        (worstMo ? synRow("Moment le plus oublié", `${worstMo.label} (${worstMo.missed} oubli${worstMo.missed > 1 ? "s" : ""})`) : "")
+      }</table>${subTable("Par moment de la journée", momentRows)}${subTable("Par médicament", perMedRows)}</div>`
     : "";
 
   const aiHtml = aiResult ? `<div style="margin-top:28px;page-break-before:always"><h3 style="font-size:18px;color:#185FA5;margin-bottom:12px">Analyse (IA locale)</h3><div style="font-size:14px;line-height:1.7;white-space:pre-wrap">${aiResult}</div></div>` : "";
@@ -1161,8 +1178,8 @@ export default function App() {
       {/* Aperçu PDF (mobile) : plein écran, fermeture via « Retour » ou bouton retour Android */}
       {view==="pdf"&&(
         <div style={{position:"fixed",inset:0,background:"#fff",zIndex:1000,display:"flex",flexDirection:"column"}}>
-          <div style={{display:"flex",alignItems:"center",gap:8,padding:"max(10px,env(safe-area-inset-top)) 14px 10px",borderBottom:"1px solid #e3e7ec",background:"#fff",color:"#1a1a1a"}}>
-            <button onClick={()=>setView("soignant")} style={{display:"flex",alignItems:"center",gap:5,fontSize:13}}><i className="ti ti-arrow-left" aria-hidden="true"></i> Retour</button>
+          <div style={{display:"flex",alignItems:"center",gap:8,padding:"max(env(safe-area-inset-top),38px) 14px 12px",borderBottom:"1px solid #e3e7ec",background:"#fff",color:"#1a1a1a"}}>
+            <button onClick={()=>setView("soignant")} style={{display:"flex",alignItems:"center",gap:5,fontSize:13,background:"#fff",color:"#1a1a1a",borderColor:"#d3d7e3"}}><i className="ti ti-arrow-left" aria-hidden="true"></i> Retour</button>
             <span style={{flex:1,fontWeight:600}}>Aperçu PDF</span>
           </div>
           <iframe srcDoc={pdfHtml} title="Aperçu PDF" style={{flex:1,border:"none",width:"100%"}} />
