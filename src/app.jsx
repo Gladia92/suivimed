@@ -53,16 +53,10 @@ async function scheduleReminders(settings){
     const perm = await LN.requestPermissions();
     if (perm.display !== "granted") return "no-permission";
 
-    // Canal dédié, importance max : son + vibration + affichage immédiat (effet "alarme"),
-    // contrairement au canal par défaut qui peut rester silencieux.
-    await LN.createChannel({
-      id: "rappels_prises",
-      name: "Rappels de prise",
-      description: "Alarme de rappel pour la prise des médicaments",
-      importance: 5,
-      visibility: 1,
-      vibration: true,
-    }).catch(()=>{});
+    // Le canal "rappels_alarme_v1" est créé NATIVEMENT au démarrage (MainActivity)
+    // avec USAGE_ALARM : son sur le flux d'alarme (fort, ignore silencieux/Ne pas
+    // déranger). On ne le (re)crée pas ici — l'API JS forcerait USAGE_NOTIFICATION
+    // et un canal est immuable une fois créé.
 
     const meds = (settings.meds || []).map(medOf);
     const todayData = (await loadMonth(base.getFullYear(), base.getMonth()))[`d${base.getDate()}`];
@@ -93,7 +87,7 @@ async function scheduleReminders(settings){
             title: "💊 Prise du " + mo.label.toLowerCase(),
             body: "Rappel : prise pas encore notée.",
             schedule: { at, allowWhileIdle: true },
-            channelId: "rappels_prises",
+            channelId: "rappels_alarme_v1",
           });
         }
       }
@@ -106,7 +100,7 @@ async function scheduleReminders(settings){
           title: "💊 Prise du " + mo.label.toLowerCase(),
           body: "N'oublie pas ta prise de médicament.",
           schedule: { on: { hour: h, minute: mi }, allowWhileIdle: true },
-          channelId: "rappels_prises",
+          channelId: "rappels_alarme_v1",
         });
       }
     });
@@ -1383,7 +1377,7 @@ export default function App() {
             <div style={{borderTop:"0.5px solid var(--color-border-tertiary)",margin:"16px 0"}}></div>
             <p style={{fontWeight:500,marginBottom:4,fontSize:14}}>Rappels de prise</p>
             <p style={{color:"var(--color-text-secondary)",fontSize:11,marginBottom:12,lineHeight:1.6}}>
-              Reçois une notification sonore (avec vibration, comme une alarme) chaque jour aux heures choisies pour penser à tes prises (mobile uniquement).
+              Déclenche une vraie alarme (son fort de ~30 s + vibration, sur le volume d'alarme — sonne même en mode silencieux ou Ne pas déranger) chaque jour aux heures choisies pour penser à tes prises (mobile uniquement).
             </p>
             <label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,marginBottom:10,cursor:"pointer"}}>
               <input type="checkbox" checked={!!settings.reminders?.enabled} onChange={e=>updateReminders({enabled:e.target.checked})}/>
