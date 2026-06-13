@@ -41,6 +41,35 @@
         --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       }
 
+      /* Mode sombre : appliqué via data-theme="dark" sur <html> (le préréglage
+         « auto » est résolu en JS via matchMedia puis posé ici). */
+      :root[data-theme="dark"] {
+        --brand: #22B8CF;
+        --brand-strong: #3BC9DB;
+        --brand-soft: #14313a;
+        --brand-grad: linear-gradient(135deg, #0E7490 0%, #0891B2 55%, #22B8CF 100%);
+        --color-background-primary: #161b22;
+        --color-background-secondary: #1d242d;
+        --color-background-app: #0e1116;
+        --color-background-danger: #2c1a1d;
+        --color-background-info: #10303a;
+        --color-text-primary: #e6edf3;
+        --color-text-secondary: #9aa7b4;
+        --color-text-tertiary: #6b7785;
+        --color-text-info: var(--brand-strong);
+        --color-text-success: #5dd28a;
+        --color-text-danger: #ff8a8a;
+        --color-text-warning: #e3b341;
+        --color-border-tertiary: #232b34;
+        --color-border-secondary: #313b46;
+        --color-border-info: var(--brand);
+        --color-border-danger: #6e3338;
+        --color-border-warning: #5c4a1f;
+        --color-background-warning: #2a2113;
+        --shadow-sm: 0 1px 2px rgba(0,0,0,0.4), 0 1px 3px rgba(0,0,0,0.3);
+        --shadow-md: 0 6px 18px rgba(0,0,0,0.5);
+      }
+
       body {
         font-family: var(--font-sans);
         background: var(--color-background-app);
@@ -59,12 +88,12 @@
         padding: 7px 13px;
         border: 1px solid var(--color-border-secondary);
         border-radius: 10px;
-        background: #fff;
+        background: var(--color-background-primary);
         color: var(--color-text-primary);
         cursor: pointer;
         transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, transform .05s ease;
       }
-      button:hover { background: #f7fafc; border-color: var(--brand); box-shadow: var(--shadow-sm); }
+      button:hover { background: var(--color-background-secondary); border-color: var(--brand); box-shadow: var(--shadow-sm); }
       button:active { transform: translateY(0.5px); }
       button:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
 
@@ -75,7 +104,7 @@
         border: 1px solid var(--color-border-secondary);
         border-radius: 10px;
         padding: 7px 11px;
-        background: #fff;
+        background: var(--color-background-primary);
         color: var(--color-text-primary);
         outline: none;
         transition: border-color .15s ease, box-shadow .15s ease;
@@ -107,6 +136,19 @@
       *::-webkit-scrollbar-thumb { background: #cdd6df; border-radius: 8px; }
       *::-webkit-scrollbar-thumb:hover { background: #b6c1cc; }
     </style>
+    <!-- Thème appliqué avant le premier rendu pour éviter tout flash clair/sombre -->
+    <script>
+      (function () {
+        try {
+          var s = JSON.parse(localStorage.getItem("suivimed_settings.json")) || {};
+          var p = s.theme; // "light" | "dark" | "auto" | undefined
+          var dark = p === "dark" ||
+            (p !== "light" && window.matchMedia &&
+             window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.dataset.theme = dark ? "dark" : "light";
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

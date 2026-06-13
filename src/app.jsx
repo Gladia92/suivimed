@@ -150,6 +150,15 @@ const WEEKDAYS      = ["dimanche","lundi","mardi","mercredi","jeudi","vendredi",
 const WEEKDAYS_MINI = ["D","L","M","M","J","V","S"];
 const today = new Date();
 
+// Applique le thème sur <html data-theme>. « auto » est résolu via matchMedia
+// (le CSS ne connaît que data-theme="light" | "dark"). Cf. MigraineLog.
+function applyTheme(pref) {
+  const dark = pref === "dark" ||
+    (pref !== "light" && window.matchMedia &&
+     window.matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+}
+
 function daysInMonth(y, m) { return new Date(y, m + 1, 0).getDate(); }
 function fileKey(y, m)     { return `suivimed_${y}_${String(m + 1).padStart(2,"0")}.json`; } // m 0-based -> nom 1-based
 function settingsFile()    { return "suivimed_settings.json"; }
@@ -541,7 +550,11 @@ export default function App() {
   const [month, setMonth] = useState(today.getMonth());
   const [data,  setData]  = useState({});
   const [settings, setSettings] = useState({ meds: [] });
-  const [view,  setView]  = useState("grid");
+  // Vue principale : "suivi" (écran simple des prises du jour, pour la personne âgée)
+  // ou "soignant" (espace regroupant config, analyses et réglages).
+  const [view,  setView]  = useState("suivi");
+  // Sous-vue de l'espace soignant.
+  const [careView, setCareView] = useState("meds");
   const [confirmDel, setConfirmDel] = useState(null);
   const [toast, setToast] = useState("");
   const [aiResult,  setAiResult]  = useState("");
@@ -574,6 +587,18 @@ export default function App() {
   const [reminderStatus, setReminderStatus] = useState("");
   // Fiabilité de l'alarme : l'app est-elle exemptée de l'optimisation batterie (Doze) ?
   const [batteryOk, setBatteryOk] = useState(true);
+
+  // Thème clair/sombre/auto : applique le préréglage et, en « auto », suit en direct
+  // le réglage clair/sombre de l'appareil.
+  const themePref = settings.theme || "auto";
+  useEffect(() => {
+    applyTheme(themePref);
+    if (themePref !== "auto" || !window.matchMedia) return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => applyTheme("auto");
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [themePref]);
   const replanReminders = useCallback((s) => {
     if (!isCapacitor) return;
     scheduleReminders(s).then(st => setReminderStatus(st || "")).catch(() => {});
@@ -671,7 +696,7 @@ export default function App() {
   const lastBackRef = useRef(0);
   backHandlerRef.current = () => {
     if (confirmDel !== null)  { setConfirmDel(null); return; }
-    if (view !== "grid")      { setView("grid");    return; }
+    if (view !== "suivi")     { setView("suivi");   return; }
     const now = Date.now();
     if (now - lastBackRef.current < 2000) {
       CapacitorApp.exitApp();
@@ -888,6 +913,7 @@ export default function App() {
 
   // ── Réglages : profil & médicaments
   const saveSettings = (s) => { dirtyRef.current = true; setSettings(s); saveFile(settingsFile(), s); };
+  const setTheme = (theme) => saveSettings({ ...settings, theme });
   const updateProfile = (patch) => saveSettings({ ...settings, profile: { ...(settings.profile||{}), ...patch } });
   const updateReminders = (patch) => {
     const r = { enabled:false, mode:"alarm", matin:"08:00", midi:"12:00", soir:"20:00", ...(settings.reminders||{}), ...patch };
@@ -1032,17 +1058,36 @@ export default function App() {
     }
   };
   const goToday = () => { setYear(today.getFullYear()); setMonth(today.getMonth()); setSelDay(today.getDate()); };
+  // Navigation jour à jour pour l'écran de suivi (indépendante du sélecteur de période).
+  const goPrevDay = () => {
+    if (selDay > 1) return setSelDay(selDay - 1);
+    const pm = month === 0 ? 11 : month - 1, py = month === 0 ? year - 1 : year;
+    setYear(py); setMonth(pm); setSelDay(daysInMonth(py, pm));
+  };
+  const goNextDay = () => {
+    if (selDay < days) return setSelDay(selDay + 1);
+    const nm = month === 11 ? 0 : month + 1, ny = month === 11 ? year + 1 : year;
+    setYear(ny); setMonth(nm); setSelDay(1);
+  };
+  const dayLabelMain = `${WEEKDAYS[new Date(year, month, Math.min(selDay, days)).getDay()]} ${Math.min(selDay, days)} ${MONTHS[month]} ${year}`;
   const rangeLabel =
     period === "day"  ? `${WEEKDAYS[new Date(year, month, visDays[0]).getDay()]} ${visDays[0]} ${MONTHS[month]} ${year}`
     : period === "week" ? `${visDays[0]}–${visDays[visDays.length - 1]} ${MONTHS_SHORT[month]} ${year}`
     : `${MONTHS[month]} ${year}`;
 
+  // Navigation principale : deux espaces seulement, pour rester simple.
   const tabs = [
-    {id:"grid",      icon:"ti-table",          label:"Grille"},
-    {id:"observance",icon:"ti-chart-bar",      label:"Observance"},
-    {id:"annual",    icon:"ti-calendar-stats", label:"Annuel"},
+    {id:"suivi",    icon:"ti-checkup-list", label:"Mes prises"},
+    {id:"soignant", icon:"ti-stethoscope",  label:"Soignant"},
+  ];
+  // Sous-navigation de l'espace soignant.
+  const careTabs = [
+    {id:"meds",       icon:"ti-pill",           label:"Médicaments"},
+    {id:"calendar",   icon:"ti-table",          label:"Calendrier"},
+    {id:"observance", icon:"ti-chart-bar",      label:"Observance"},
+    {id:"annual",     icon:"ti-calendar-stats", label:"Annuel"},
     ...(isElectron ? [{id:"ai", icon:"ti-brain", label:"Analyse IA"}] : []),
-    {id:"settings",  icon:"ti-settings",       label:"Paramètres"},
+    {id:"settings",   icon:"ti-settings",       label:"Réglages"},
   ];
 
   return (
@@ -1068,18 +1113,6 @@ export default function App() {
             </span>
           )}
         </div>
-
-        <div style={{display:"flex",gap:8,flexWrap:"wrap",flex:"0 0 auto"}}>
-          {isElectron
-            ? <button onClick={handleImportJSON} style={{display:"flex",alignItems:"center",gap:5,fontSize:12}}><i className="ti ti-upload" aria-hidden="true"></i> Importer</button>
-            : <label style={{cursor:"pointer",display:"inline-flex",alignItems:"center",gap:5,border:"1px solid var(--color-border-secondary)",borderRadius:"var(--border-radius-md)",padding:"7px 11px",fontSize:12,background:"#fff"}}>
-                <i className="ti ti-upload" aria-hidden="true"></i> Importer
-                <input type="file" accept=".json" onChange={handleImportJSON} style={{display:"none"}}/>
-              </label>
-          }
-          <button onClick={handleExportJSON} style={{display:"flex",alignItems:"center",gap:5,fontSize:12}}><i className="ti ti-download" aria-hidden="true"></i> Exporter</button>
-          <button onClick={()=>exportPDF(year,month,data,settings,aiResult)} style={{display:"flex",alignItems:"center",gap:5,fontSize:12}}><i className="ti ti-file-type-pdf" aria-hidden="true"></i> PDF</button>
-        </div>
       </div>
 
       {/* Tabs (segmented) */}
@@ -1100,19 +1133,82 @@ export default function App() {
         </div>
       </div>
 
-      {/* Month nav (observance) */}
-      {view==="observance"&&(
-        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:14}}>
-          <button onClick={prevMonth}><i className="ti ti-arrow-left" aria-hidden="true"></i></button>
-          <span style={{fontWeight:500,minWidth:140,textAlign:"center"}}>{MONTHS[month]} {year}</span>
-          <button onClick={nextMonth}><i className="ti ti-arrow-right" aria-hidden="true"></i></button>
+      {/* ===================== ÉCRAN PRINCIPAL : mes prises du jour ===================== */}
+      {view==="suivi"&&(
+        <div className="sm-view">
+          {/* Navigation jour à jour, grande et lisible (pour la personne âgée) */}
+          <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:14,marginBottom:18}}>
+            <button onClick={goPrevDay} aria-label="Jour précédent" style={{padding:"12px 16px",fontSize:18,borderRadius:12}}><i className="ti ti-chevron-left" aria-hidden="true"></i></button>
+            <div style={{textAlign:"center"}}>
+              <div style={{fontSize:19,fontWeight:700,textTransform:"capitalize",lineHeight:1.25}}>{dayLabelMain}</div>
+              {isToday(Math.min(selDay,days))
+                ? <div style={{fontSize:12.5,color:"var(--brand-strong)",fontWeight:600,marginTop:3}}>Aujourd'hui</div>
+                : <button onClick={goToday} style={{marginTop:6,fontSize:12,padding:"4px 12px",display:"inline-flex",alignItems:"center",gap:5}}><i className="ti ti-calendar-event" aria-hidden="true"></i> Revenir à aujourd'hui</button>}
+            </div>
+            <button onClick={goNextDay} aria-label="Jour suivant" style={{padding:"12px 16px",fontSize:18,borderRadius:12}}><i className="ti ti-chevron-right" aria-hidden="true"></i></button>
+          </div>
+
+          {meds.length === 0 ? (
+            <div style={{textAlign:"center",margin:"44px 0",color:"var(--color-text-secondary)"}}>
+              <i className="ti ti-pill" style={{fontSize:44,color:"var(--color-text-tertiary)"}} aria-hidden="true"></i>
+              <p style={{marginTop:14,fontSize:15,fontWeight:500,color:"var(--color-text-primary)"}}>Aucun médicament pour l'instant</p>
+              <p style={{fontSize:13,marginTop:6,lineHeight:1.6}}>Les médicaments et la posologie se configurent<br/>dans l'espace « Soignant ».</p>
+              <button onClick={()=>{setView("soignant");setCareView("meds");}} style={{marginTop:16,fontSize:13,padding:"9px 18px",display:"inline-flex",alignItems:"center",gap:6}}>
+                <i className="ti ti-stethoscope" aria-hidden="true"></i> Ouvrir l'espace soignant
+              </button>
+            </div>
+          ) : (
+            <DayView meds={meds} data={data} year={year} month={month} day={Math.min(selDay,days)} onToggle={setCell} />
+          )}
         </div>
       )}
 
-      {/* GRID */}
-      {view==="grid"&&(
+      {/* ===================== ESPACE SOIGNANT (en-tête : actions + sous-navigation) ===================== */}
+      {view==="soignant"&&(
+        <div className="sm-view" style={{marginBottom:16}}>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",justifyContent:"flex-end",marginBottom:14}}>
+            {isElectron
+              ? <button onClick={handleImportJSON} style={{display:"flex",alignItems:"center",gap:5,fontSize:12}}><i className="ti ti-upload" aria-hidden="true"></i> Importer</button>
+              : <label style={{cursor:"pointer",display:"inline-flex",alignItems:"center",gap:5,border:"1px solid var(--color-border-secondary)",borderRadius:"var(--border-radius-md)",padding:"7px 11px",fontSize:12,background:"var(--color-background-primary)"}}>
+                  <i className="ti ti-upload" aria-hidden="true"></i> Importer
+                  <input type="file" accept=".json" onChange={handleImportJSON} style={{display:"none"}}/>
+                </label>
+            }
+            <button onClick={handleExportJSON} style={{display:"flex",alignItems:"center",gap:5,fontSize:12}}><i className="ti ti-download" aria-hidden="true"></i> Exporter</button>
+            <button onClick={()=>exportPDF(year,month,data,settings,aiResult)} style={{display:"flex",alignItems:"center",gap:5,fontSize:12}}><i className="ti ti-file-type-pdf" aria-hidden="true"></i> PDF</button>
+          </div>
+          <div style={{display:"flex",overflowX:"auto"}}>
+            <div style={{display:"inline-flex",background:"var(--color-background-secondary)",borderRadius:12,padding:4,gap:2}}>
+              {careTabs.map(t=>(
+                <button key={t.id} onClick={()=>setCareView(t.id)} style={{
+                  display:"flex",alignItems:"center",gap:6,padding:"7px 13px",fontSize:12.5,whiteSpace:"nowrap",
+                  border:"none",borderRadius:9,
+                  background:careView===t.id?"var(--color-background-primary)":"transparent",
+                  boxShadow:careView===t.id?"var(--shadow-sm)":"none",
+                  color:careView===t.id?"var(--brand-strong)":"var(--color-text-secondary)",
+                  fontWeight:careView===t.id?600:500,cursor:"pointer"
+                }}>
+                  <i className={`ti ${t.icon}`} aria-hidden="true"></i>{t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Soignant · Médicaments & posologie */}
+      {view==="soignant"&&careView==="meds"&&(
+        <MedsPosology
+          meds={settings.meds}
+          updateMed={updateMed} addMed={addMed} setConfirmDel={setConfirmDel}
+          addRegimen={addRegimen} updateRegimen={updateRegimen} deleteRegimen={deleteRegimen}
+          confirmDel={confirmDel} deleteMed={deleteMed}
+        />
+      )}
+
+      {/* Soignant · Calendrier (jour / semaine / mois) */}
+      {view==="soignant"&&careView==="calendar"&&(
         <>
-          {/* Durée d'affichage + navigation */}
           <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14,flexWrap:"wrap"}}>
             <div style={{display:"inline-flex",background:"var(--color-background-secondary)",borderRadius:999,padding:3,gap:2}}>
               {[["day","Jour"],["week","Semaine"],["month","Mois"]].map(([p,L])=>(
@@ -1127,15 +1223,13 @@ export default function App() {
             <button onClick={goToday} style={{fontSize:12,padding:"5px 10px",display:"flex",alignItems:"center",gap:5}}><i className="ti ti-calendar-event" aria-hidden="true"></i> Aujourd'hui</button>
           </div>
 
-          {meds.length === 0 && (
+          {meds.length === 0 ? (
             <p style={{color:"var(--color-text-secondary)",textAlign:"center",margin:"24px 0"}}>
-              Ajoute ton premier médicament ci-dessous pour commencer le suivi.
+              Ajoute un médicament dans « Médicaments » pour voir le calendrier.
             </p>
-          )}
-          {meds.length > 0 && period === "day" && (
+          ) : period === "day" ? (
             <DayView meds={meds} data={data} year={year} month={month} day={visDays[0]} onToggle={setCell} />
-          )}
-          {meds.length > 0 && period !== "day" && (<>
+          ) : (<>
           <div style={{overflowX:"auto",borderRadius:"var(--border-radius-lg)",border:"0.5px solid var(--color-border-tertiary)",width:"fit-content",maxWidth:"100%",margin:"0 auto"}}>
             <table style={{borderCollapse:"collapse",tableLayout:"fixed",width:LABEL_W+visDays.length*CELL+"px"}}>
               <thead>
@@ -1185,20 +1279,17 @@ export default function App() {
           </div>
           </>)}
 
-          {/* Médicaments & posologie (déplacé sous la grille) */}
-          <div style={{borderTop:"0.5px solid var(--color-border-tertiary)",margin:"20px 0 14px"}}></div>
-          <MedsPosology
-            meds={settings.meds}
-            updateMed={updateMed} addMed={addMed} setConfirmDel={setConfirmDel}
-            addRegimen={addRegimen} updateRegimen={updateRegimen} deleteRegimen={deleteRegimen}
-            confirmDel={confirmDel} deleteMed={deleteMed}
-          />
         </>
       )}
 
-      {/* OBSERVANCE */}
-      {view==="observance"&&(
+      {/* Soignant · Observance */}
+      {view==="soignant"&&careView==="observance"&&(
         <div>
+          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16}}>
+            <button onClick={prevMonth} aria-label="Mois précédent"><i className="ti ti-arrow-left" aria-hidden="true"></i></button>
+            <span style={{fontWeight:600,minWidth:140,textAlign:"center",textTransform:"capitalize"}}>{MONTHS[month]} {year}</span>
+            <button onClick={nextMonth} aria-label="Mois suivant"><i className="ti ti-arrow-right" aria-hidden="true"></i></button>
+          </div>
           {!hasMonthData
             ?<p style={{color:"var(--color-text-secondary)",textAlign:"center",marginTop:32}}>Aucune prise prévue ou enregistrée ce mois.</p>
             :<>
@@ -1263,8 +1354,8 @@ export default function App() {
         </div>
       )}
 
-      {/* ANNUAL */}
-      {view==="annual"&&(
+      {/* Soignant · Annuel */}
+      {view==="soignant"&&careView==="annual"&&(
         <div>
           <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:20}}>
             <button onClick={()=>setAnnualYear(y=>y-1)}><i className="ti ti-arrow-left" aria-hidden="true"></i></button>
@@ -1283,7 +1374,7 @@ export default function App() {
               const isCur=m===month&&annualYear===year;
               const hasData = prescribed>0||taken>0;
               return(
-                <button key={m} onClick={()=>{setYear(annualYear);setMonth(m);setView("grid");}} style={{
+                <button key={m} onClick={()=>{setYear(annualYear);setMonth(m);setView("soignant");setCareView("calendar");setPeriod("month");}} style={{
                   padding:"12px 8px",textAlign:"center",borderRadius:"var(--border-radius-md)",
                   border:isCur?"2px solid var(--color-border-info)":"0.5px solid var(--color-border-tertiary)",
                   background:hasData?rateColor(rate):"var(--color-background-secondary)",cursor:"pointer"
@@ -1305,8 +1396,8 @@ export default function App() {
         </div>
       )}
 
-      {/* AI */}
-      {view==="ai"&&(
+      {/* Soignant · Analyse IA */}
+      {view==="soignant"&&careView==="ai"&&(
         <div>
           {isElectron && !ollamaReady && (
             <div style={{background:"var(--color-background-secondary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"1rem 1.25rem",marginBottom:16}}>
@@ -1379,9 +1470,31 @@ export default function App() {
         </div>
       )}
 
-      {/* SETTINGS */}
-      {view==="settings"&&(
+      {/* Soignant · Réglages */}
+      {view==="soignant"&&careView==="settings"&&(
         <div style={{background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"1rem 1.25rem"}}>
+          {/* Apparence : thème clair / sombre / automatique */}
+          <p style={{fontWeight:500,marginBottom:4,fontSize:14}}>Apparence</p>
+          <p style={{color:"var(--color-text-secondary)",fontSize:11,marginBottom:12,lineHeight:1.6}}>
+            Choisis le thème de l'application. « Automatique » suit le réglage clair/sombre de l'appareil.
+          </p>
+          <div style={{display:"inline-flex",background:"var(--color-background-secondary)",borderRadius:999,padding:3,gap:2,flexWrap:"wrap"}}>
+            {[["light","Clair","ti-sun"],["dark","Sombre","ti-moon"],["auto","Auto","ti-device-desktop"]].map(([val,L,ic])=>{
+              const active=themePref===val;
+              return(
+                <button key={val} onClick={()=>setTheme(val)} aria-pressed={active} style={{
+                  display:"flex",alignItems:"center",gap:6,padding:"7px 15px",fontSize:12.5,borderRadius:999,border:"none",cursor:"pointer",
+                  background:active?"var(--color-background-primary)":"transparent",
+                  color:active?"var(--brand-strong)":"var(--color-text-secondary)",
+                  fontWeight:active?600:500,boxShadow:active?"var(--shadow-sm)":"none"
+                }}>
+                  <i className={`ti ${ic}`} style={{fontSize:14}} aria-hidden="true"></i>{L}
+                </button>
+              );
+            })}
+          </div>
+          <div style={{borderTop:"0.5px solid var(--color-border-tertiary)",margin:"16px 0"}}></div>
+
           {syncAvailable && (
             <>
               <p style={{fontWeight:500,marginBottom:4,fontSize:14}}>Synchronisation</p>
