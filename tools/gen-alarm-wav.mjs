@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 
 const SAMPLE_RATE = 22050;   // Hz (un peu plus haut = grave plus propre)
 const DURATION_S  = 30;      // durée totale du clip
-const F0          = 150;     // fréquence fondamentale (Hz) — grave et doux
+const F0          = 300;     // fréquence fondamentale (Hz) — grave mais audible sur petit haut-parleur
 const AMPLITUDE   = 0.55;    // < 0.92 de l'ancienne version : plus doux, plus de marge
 
 // Un cycle = une lente montée/descente (SWELL) suivie d'un silence (GAP).
