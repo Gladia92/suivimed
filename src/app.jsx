@@ -382,6 +382,50 @@ function rateColor(rate) {
   return "#E24B4A";
 }
 
+// Libellé qualitatif clair de l'observance (pour un coup d'œil sans interpréter le %).
+function rateLabel(rate) {
+  if (rate == null) return "Pas de données";
+  if (rate >= 90) return "Bonne observance";
+  if (rate >= 75) return "Observance correcte";
+  if (rate >= 50) return "À surveiller";
+  return "Observance insuffisante";
+}
+// Sévérité → couleur sémantique de texte (lisible en clair comme en sombre).
+function rateSeverityColor(rate) {
+  if (rate == null) return "var(--color-text-tertiary)";
+  if (rate >= 75) return "var(--color-text-success)";
+  if (rate >= 50) return "var(--color-text-warning)";
+  return "var(--color-text-danger)";
+}
+
+// Statistiques jour par jour sur un mois : jours « parfaits » (toutes les doses
+// dues ont été prises), jours avec au moins un oubli, plus longue série de jours
+// parfaits, et nombre de jours réellement concernés (au moins une dose due).
+function dailyStats(monthData, meds, year, month) {
+  const days = daysInMonth(year, month);
+  const ms = meds.map(medOf);
+  let perfect = 0, withMiss = 0, activeDays = 0, streak = 0, bestStreak = 0;
+  for (let d = 1; d <= days; d++) {
+    const ds = dateStr(year, month, d);
+    const past = isPast(ds);
+    const dd = monthData[`d${d}`];
+    let due = 0, miss = 0;
+    ms.forEach((med, i) => {
+      MOMENTS.forEach(mo => {
+        const P = prescribedDose(med, ds, mo.key) > 0;
+        const T = takenDose(dd, i, mo.key) > 0;
+        if (P && (past || T)) due += 1;
+        if (P && past && !T)  miss += 1;
+      });
+    });
+    if (due === 0) continue;          // jour sans dose due échue → neutre
+    activeDays += 1;
+    if (miss === 0) { perfect += 1; streak += 1; if (streak > bestStreak) bestStreak = streak; }
+    else            { withMiss += 1; streak = 0; }
+  }
+  return { perfect, withMiss, activeDays, bestStreak };
+}
+
 function regimenText(med) {
   const regs = (med.regimens || []).slice().sort((a, b) => (a.start || "").localeCompare(b.start || ""));
   if (!regs.length) return "posologie non renseignée";
@@ -555,6 +599,8 @@ export default function App() {
   const [view,  setView]  = useState("suivi");
   // Sous-vue de l'espace soignant.
   const [careView, setCareView] = useState("meds");
+  // Observance : portée d'analyse "month" (mois courant) ou "year" (vue annuelle).
+  const [obsScope, setObsScope] = useState("month");
   const [confirmDel, setConfirmDel] = useState(null);
   const [toast, setToast] = useState("");
   const [aiResult,  setAiResult]  = useState("");
@@ -1019,6 +1065,13 @@ export default function App() {
     ? Math.round(annualMonths.filter(m=>m.rate!=null).reduce((s,m)=>s+m.rate,0)/annualMonths.filter(m=>m.rate!=null).length)
     : null;
   const annualMissed = annualData.reduce((s,m)=>s+m.missed,0);
+  const annualRated = annualMonths.filter(m=>m.rate!=null);
+  const annualBest  = annualRated.reduce((b,m)=>!b||m.rate>b.rate?m:b, null);
+  const annualWorst = annualRated.reduce((w,m)=>!w||m.rate<w.rate?m:w, null);
+
+  // Détail jour par jour du mois courant (jours parfaits, série, etc.).
+  const dStats = dailyStats(data, settings.meds, year, month);
+  const worstMo = worstMoment(adh.byMoment);
 
   const compact = vw < 600;            // mobile / petit écran
   const LABEL_W = compact ? 104 : 190;
@@ -1080,14 +1133,13 @@ export default function App() {
     {id:"suivi",    icon:"ti-checkup-list", label:"Mes prises"},
     {id:"soignant", icon:"ti-stethoscope",  label:"Soignant"},
   ];
-  // Sous-navigation de l'espace soignant.
+  // Sous-navigation de l'espace soignant (Observance regroupe mois + année ;
+  // Réglages est sorti de l'espace soignant, accessible via l'engrenage de l'en-tête).
   const careTabs = [
-    {id:"meds",       icon:"ti-pill",           label:"Médicaments"},
-    {id:"calendar",   icon:"ti-table",          label:"Calendrier"},
-    {id:"observance", icon:"ti-chart-bar",      label:"Observance"},
-    {id:"annual",     icon:"ti-calendar-stats", label:"Annuel"},
+    {id:"meds",       icon:"ti-pill",      label:"Médicaments"},
+    {id:"calendar",   icon:"ti-table",     label:"Calendrier"},
+    {id:"observance", icon:"ti-chart-bar", label:"Observance"},
     ...(isElectron ? [{id:"ai", icon:"ti-brain", label:"Analyse IA"}] : []),
-    {id:"settings",   icon:"ti-settings",       label:"Réglages"},
   ];
 
   return (
@@ -1113,6 +1165,14 @@ export default function App() {
             </span>
           )}
         </div>
+
+        <button onClick={()=>setView(view==="settings"?"suivi":"settings")} aria-label="Réglages"
+          style={{display:"flex",alignItems:"center",gap:5,fontSize:12,flex:"0 0 auto",
+            color:view==="settings"?"var(--brand-strong)":undefined,
+            borderColor:view==="settings"?"var(--brand)":undefined,
+            fontWeight:view==="settings"?600:undefined}}>
+          <i className="ti ti-settings" aria-hidden="true"></i> Réglages
+        </button>
       </div>
 
       {/* Tabs (segmented) */}
@@ -1285,114 +1345,144 @@ export default function App() {
       {/* Soignant · Observance */}
       {view==="soignant"&&careView==="observance"&&(
         <div>
-          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16}}>
-            <button onClick={prevMonth} aria-label="Mois précédent"><i className="ti ti-arrow-left" aria-hidden="true"></i></button>
-            <span style={{fontWeight:600,minWidth:140,textAlign:"center",textTransform:"capitalize"}}>{MONTHS[month]} {year}</span>
-            <button onClick={nextMonth} aria-label="Mois suivant"><i className="ti ti-arrow-right" aria-hidden="true"></i></button>
+          {/* Portée d'analyse + navigateur */}
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:18,flexWrap:"wrap"}}>
+            <div style={{display:"inline-flex",background:"var(--color-background-secondary)",borderRadius:999,padding:3,gap:2}}>
+              {[["month","Mois"],["year","Année"]].map(([v,L])=>(
+                <button key={v} onClick={()=>setObsScope(v)} style={{padding:"5px 16px",fontSize:12,borderRadius:999,border:"none",cursor:"pointer",background:obsScope===v?"var(--color-background-primary)":"transparent",color:obsScope===v?"var(--brand-strong)":"var(--color-text-secondary)",fontWeight:obsScope===v?600:500,boxShadow:obsScope===v?"var(--shadow-sm)":"none"}}>{L}</button>
+              ))}
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:8,flex:"1 1 200px",justifyContent:"center",minWidth:0}}>
+              {obsScope==="month" ? (<>
+                <button onClick={prevMonth} aria-label="Mois précédent"><i className="ti ti-chevron-left" aria-hidden="true"></i></button>
+                <span style={{fontWeight:600,minWidth:150,textAlign:"center",textTransform:"capitalize",fontSize:14}}>{MONTHS[month]} {year}</span>
+                <button onClick={nextMonth} aria-label="Mois suivant"><i className="ti ti-chevron-right" aria-hidden="true"></i></button>
+              </>) : (<>
+                <button onClick={()=>setAnnualYear(y=>y-1)} aria-label="Année précédente"><i className="ti ti-chevron-left" aria-hidden="true"></i></button>
+                <span style={{fontWeight:600,minWidth:80,textAlign:"center",fontSize:14}}>{annualYear}</span>
+                <button onClick={()=>setAnnualYear(y=>y+1)} aria-label="Année suivante"><i className="ti ti-chevron-right" aria-hidden="true"></i></button>
+              </>)}
+            </div>
           </div>
-          {!hasMonthData
-            ?<p style={{color:"var(--color-text-secondary)",textAlign:"center",marginTop:32}}>Aucune prise prévue ou enregistrée ce mois.</p>
-            :<>
-              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:12,marginBottom:20}}>
-                <MetricCard label="Observance" value={adh.rate!=null?adh.rate:"—"} unit={adh.rate!=null?"%":""} icon="ti-circle-check" color={rateColor(adh.rate)}/>
-                <MetricCard label="Prises dues"        value={adh.prescribed} unit="" icon="ti-clipboard-list"/>
-                <MetricCard label="Faites"             value={adh.taken}      unit="" icon="ti-pill"/>
-                <MetricCard label="Oublis"             value={adh.missed}     unit="" icon="ti-alert-triangle"/>
+
+          {/* ===== Vue MOIS ===== */}
+          {obsScope==="month" && (!hasMonthData
+            ? <p style={{color:"var(--color-text-secondary)",textAlign:"center",marginTop:32}}>Aucune prise prévue ou enregistrée ce mois.</p>
+            : <>
+              <div style={{background:"var(--color-background-primary)",border:"1px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"16px 18px",marginBottom:16,boxShadow:"var(--shadow-sm)"}}>
+                <div style={{display:"flex",alignItems:"baseline",gap:12,flexWrap:"wrap"}}>
+                  <span style={{fontSize:44,fontWeight:700,lineHeight:1,color:rateSeverityColor(adh.rate)}}>{adh.rate!=null?adh.rate+"%":"—"}</span>
+                  <span style={{fontSize:15,fontWeight:600,color:rateSeverityColor(adh.rate)}}>{rateLabel(adh.rate)}</span>
+                </div>
+                <div style={{height:8,borderRadius:999,background:"var(--color-background-secondary)",marginTop:12,overflow:"hidden"}}>
+                  <div style={{height:"100%",width:`${adh.rate||0}%`,background:rateSeverityColor(adh.rate),borderRadius:999,transition:"width .4s ease"}} />
+                </div>
+                <p style={{fontSize:12.5,color:"var(--color-text-secondary)",marginTop:10}}>
+                  <strong style={{color:"var(--color-text-primary)"}}>{adh.taken}</strong> prises faites sur <strong style={{color:"var(--color-text-primary)"}}>{adh.prescribed}</strong> prévues · <strong style={{color:adh.missed>0?"var(--color-text-danger)":"var(--color-text-primary)"}}>{adh.missed}</strong> oubli{adh.missed>1?"s":""}
+                </p>
+              </div>
+
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:10,marginBottom:20}}>
+                <MetricCard label="Jours parfaits" value={`${dStats.perfect}/${dStats.activeDays}`} unit="" icon="ti-calendar-check"/>
+                <MetricCard label="Meilleure série" value={dStats.bestStreak} unit={dStats.bestStreak>1?"jours":"jour"} icon="ti-flame"/>
+                {worstMo && <MetricCard label="Le plus oublié" value={worstMo.label} unit="" icon="ti-alert-triangle"/>}
                 {adh.extra>0 && <MetricCard label="Hors prescription" value={adh.extra} unit="" icon="ti-arrow-up-circle"/>}
               </div>
 
               {(() => {
                 const moms = MOMENTS.map(mo => ({ mo, b: adh.byMoment[mo.key] })).filter(x => x.b.due > 0);
                 if (!moms.length) return null;
-                const worst = worstMoment(adh.byMoment);
                 return (
                   <>
-                    <p style={{fontWeight:500,marginBottom:10,fontSize:13}}>Par moment de la journée</p>
-                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:8,marginBottom:8}}>
+                    <p style={{fontWeight:600,marginBottom:10,fontSize:13}}>Par moment de la journée</p>
+                    <div style={{display:"grid",gap:8,marginBottom:18}}>
                       {moms.map(({mo,b}) => {
                         const r = Math.round(b.taken/b.due*100);
-                        const isWorst = worst && worst.key===mo.key;
+                        const isWorst = worstMo && worstMo.key===mo.key;
                         return (
-                          <div key={mo.key} style={{padding:"10px 12px",borderRadius:"var(--border-radius-md)",background:"var(--color-background-secondary)",border:isWorst?"1px solid var(--color-border-warning)":"0.5px solid var(--color-border-tertiary)"}}>
-                            <div style={{display:"flex",alignItems:"center",gap:6,fontSize:12,color:"var(--color-text-secondary)",marginBottom:6}}>
-                              <i className={`ti ${mo.icon}`} aria-hidden="true"></i>{mo.label}
+                          <div key={mo.key} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 14px",borderRadius:"var(--border-radius-md)",background:"var(--color-background-secondary)",border:isWorst?"1px solid var(--color-border-warning)":"1px solid transparent"}}>
+                            <span style={{display:"flex",alignItems:"center",gap:6,fontSize:13,fontWeight:500,flex:"0 0 84px"}}><i className={`ti ${mo.icon}`} aria-hidden="true"></i>{mo.label}</span>
+                            <div style={{flex:1,minWidth:50,height:8,borderRadius:999,background:"var(--color-background-primary)",overflow:"hidden"}}>
+                              <div style={{height:"100%",width:`${r}%`,background:rateSeverityColor(r),borderRadius:999}} />
                             </div>
-                            <div style={{display:"flex",alignItems:"center",gap:8}}>
-                              <span style={{fontSize:18,fontWeight:600}}>{r}%</span>
-                              <span style={{width:11,height:11,borderRadius:3,background:rateColor(r),display:"inline-block"}}></span>
-                            </div>
-                            <div style={{fontSize:11,color:"var(--color-text-secondary)",marginTop:4}}>{b.missed} oubli(s) / {b.due} dus</div>
+                            <span style={{fontSize:13,fontWeight:600,flex:"0 0 auto",minWidth:38,textAlign:"right"}}>{r}%</span>
+                            <span style={{fontSize:11,color:"var(--color-text-secondary)",flex:"0 0 auto"}}>{b.missed} oubli{b.missed>1?"s":""}</span>
                           </div>
                         );
                       })}
                     </div>
-                    {worst && (
-                      <p style={{fontSize:12,color:"var(--color-text-warning)",marginBottom:18,display:"flex",alignItems:"center",gap:6}}>
-                        <i className="ti ti-alert-triangle" aria-hidden="true"></i>
-                        Moment le plus oublié : <strong>&nbsp;{worst.label.toLowerCase()}</strong>&nbsp;({worst.missed} oubli{worst.missed>1?"s":""}).
-                      </p>
-                    )}
                   </>
                 );
               })()}
 
-              <p style={{fontWeight:500,marginBottom:10,fontSize:13}}>Par médicament</p>
-              <div style={{display:"grid",gap:8}}>
+              <p style={{fontWeight:600,marginBottom:10,fontSize:13}}>Par médicament</p>
+              <div style={{display:"grid",gap:8,marginBottom:16}}>
                 {adh.perMed.filter(m=>m.prescribed>0||m.taken>0).map((m,i)=>{
                   const w = worstMoment(m.byMoment);
                   return (
-                    <div key={i} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 14px",background:"var(--color-background-secondary)",borderRadius:"var(--border-radius-md)",flexWrap:"wrap"}}>
-                      <span style={{fontWeight:500,flex:"1 1 140px"}}>{m.name}</span>
-                      <span style={{fontSize:13,fontWeight:600,color:"#222",padding:"2px 10px",borderRadius:999,background:rateColor(m.rate)}}>{m.rate!=null?m.rate+"%":"n/a"}</span>
-                      <span style={{fontSize:12,color:"var(--color-text-secondary)"}}>{m.taken}/{m.prescribed} faites · {m.missed} oubli(s){m.extra?` · ${m.extra} hors prescr.`:""}{w?` · surtout le ${w.label.toLowerCase()}`:""}</span>
+                    <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:"var(--color-background-secondary)",borderRadius:"var(--border-radius-md)",flexWrap:"wrap"}}>
+                      <span style={{fontWeight:600,flex:"1 1 140px"}}>{m.name}</span>
+                      <span style={{fontSize:14,fontWeight:700,color:rateSeverityColor(m.rate),flex:"0 0 auto"}}>{m.rate!=null?m.rate+"%":"n/a"}</span>
+                      <span style={{fontSize:12,color:"var(--color-text-secondary)",flex:"1 1 100%"}}>{m.taken}/{m.prescribed} faites · {m.missed} oubli{m.missed>1?"s":""}{m.extra?` · ${m.extra} hors prescr.`:""}{w?` · surtout le ${w.label.toLowerCase()}`:""}</span>
                     </div>
                   );
                 })}
               </div>
+
+              {worstMo && (
+                <div style={{display:"flex",gap:8,alignItems:"flex-start",padding:"10px 14px",borderRadius:"var(--border-radius-md)",background:"var(--color-background-warning)",border:"1px solid var(--color-border-warning)",color:"var(--color-text-warning)",fontSize:12.5,lineHeight:1.5}}>
+                  <i className="ti ti-bulb" style={{marginTop:1}} aria-hidden="true"></i>
+                  <span>Les oublis concernent surtout <strong>le {worstMo.label.toLowerCase()}</strong>. Un rappel renforcé à ce moment peut aider.</span>
+                </div>
+              )}
             </>
-          }
-        </div>
-      )}
+          )}
 
-      {/* Soignant · Annuel */}
-      {view==="soignant"&&careView==="annual"&&(
-        <div>
-          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:20}}>
-            <button onClick={()=>setAnnualYear(y=>y-1)}><i className="ti ti-arrow-left" aria-hidden="true"></i></button>
-            <span style={{fontWeight:500,minWidth:60,textAlign:"center"}}>{annualYear}</span>
-            <button onClick={()=>setAnnualYear(y=>y+1)}><i className="ti ti-arrow-right" aria-hidden="true"></i></button>
-          </div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:10,marginBottom:24}}>
-            <MetricCard label="Observance moy." value={annualAvgRate!=null?annualAvgRate:"—"} unit={annualAvgRate!=null?"%":""} icon="ti-circle-check" color={rateColor(annualAvgRate)}/>
-            <MetricCard label="Mois suivis" value={annualMonths.length} unit="/12" icon="ti-calendar"/>
-            <MetricCard label="Oublis (année)" value={annualMissed} unit="" icon="ti-alert-triangle"/>
-          </div>
+          {/* ===== Vue ANNÉE ===== */}
+          {obsScope==="year" && (annualMonths.length===0
+            ? <p style={{color:"var(--color-text-secondary)",textAlign:"center",marginTop:32}}>Aucune donnée pour {annualYear}.</p>
+            : <>
+              <div style={{background:"var(--color-background-primary)",border:"1px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"16px 18px",marginBottom:16,boxShadow:"var(--shadow-sm)"}}>
+                <div style={{display:"flex",alignItems:"baseline",gap:12,flexWrap:"wrap"}}>
+                  <span style={{fontSize:44,fontWeight:700,lineHeight:1,color:rateSeverityColor(annualAvgRate)}}>{annualAvgRate!=null?annualAvgRate+"%":"—"}</span>
+                  <span style={{fontSize:15,fontWeight:600,color:rateSeverityColor(annualAvgRate)}}>{rateLabel(annualAvgRate)} en moyenne</span>
+                </div>
+                <p style={{fontSize:12.5,color:"var(--color-text-secondary)",marginTop:8}}>Sur <strong style={{color:"var(--color-text-primary)"}}>{annualMonths.length}</strong> mois suivis en {annualYear} · <strong style={{color:annualMissed>0?"var(--color-text-danger)":"var(--color-text-primary)"}}>{annualMissed}</strong> oubli{annualMissed>1?"s":""} au total</p>
+              </div>
 
-          <p style={{fontWeight:500,marginBottom:12,fontSize:13}}>Observance par mois</p>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(90px,1fr))",gap:8,marginBottom:28}}>
-            {annualData.map(({month:m,rate,prescribed,taken})=>{
-              const isCur=m===month&&annualYear===year;
-              const hasData = prescribed>0||taken>0;
-              return(
-                <button key={m} onClick={()=>{setYear(annualYear);setMonth(m);setView("soignant");setCareView("calendar");setPeriod("month");}} style={{
-                  padding:"12px 8px",textAlign:"center",borderRadius:"var(--border-radius-md)",
-                  border:isCur?"2px solid var(--color-border-info)":"0.5px solid var(--color-border-tertiary)",
-                  background:hasData?rateColor(rate):"var(--color-background-secondary)",cursor:"pointer"
-                }}>
-                  <div style={{fontSize:11,color:hasData?"#222":"var(--color-text-secondary)",marginBottom:4,fontWeight:500}}>{MONTHS_SHORT[m]}</div>
-                  <div style={{fontSize:20,fontWeight:500,color:hasData?"#222":"var(--color-text-tertiary)"}}>{hasData&&rate!=null?rate+"%":"–"}</div>
-                </button>
-              );
-            })}
-          </div>
-          <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
-            <span style={{fontSize:11,color:"var(--color-text-secondary)"}}>Observance :</span>
-            {[["≥90%","#c0dd97"],["75–89%","#FAC775"],["50–74%","#F0997B"],["<50%","#E24B4A"]].map(([l,c])=>(
-              <span key={l} style={{display:"flex",alignItems:"center",gap:4,fontSize:11,color:"var(--color-text-secondary)"}}>
-                <span style={{width:12,height:12,borderRadius:2,background:c,display:"inline-block"}}></span>{l}
-              </span>
-            ))}
-          </div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:10,marginBottom:20}}>
+                <MetricCard label="Mois suivis" value={annualMonths.length} unit="/12" icon="ti-calendar"/>
+                {annualBest && <MetricCard label="Meilleur mois" value={`${MONTHS_SHORT[annualBest.month]} ${annualBest.rate}%`} unit="" icon="ti-trophy"/>}
+                {annualWorst && annualWorst!==annualBest && <MetricCard label="Mois le plus difficile" value={`${MONTHS_SHORT[annualWorst.month]} ${annualWorst.rate}%`} unit="" icon="ti-alert-triangle"/>}
+              </div>
+
+              <p style={{fontWeight:600,marginBottom:12,fontSize:13}}>Mois par mois <span style={{fontWeight:400,color:"var(--color-text-tertiary)",fontSize:11}}>· touchez un mois pour le détail</span></p>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(86px,1fr))",gap:8,marginBottom:18}}>
+                {annualData.map(({month:m,rate,prescribed,taken})=>{
+                  const isCur=m===month&&annualYear===year;
+                  const hasData = prescribed>0||taken>0;
+                  return(
+                    <button key={m} onClick={()=>{ if(hasData){ setYear(annualYear); setMonth(m); setObsScope("month"); } }} style={{
+                      padding:"12px 8px",textAlign:"center",borderRadius:"var(--border-radius-md)",
+                      border:isCur?"2px solid var(--brand)":"1px solid var(--color-border-tertiary)",
+                      background:hasData?rateColor(rate):"var(--color-background-secondary)",cursor:hasData?"pointer":"default"
+                    }}>
+                      <div style={{fontSize:11,color:hasData?"#1a1a1a":"var(--color-text-secondary)",marginBottom:4,fontWeight:600}}>{MONTHS_SHORT[m]}</div>
+                      <div style={{fontSize:20,fontWeight:600,color:hasData?"#1a1a1a":"var(--color-text-tertiary)"}}>{hasData&&rate!=null?rate+"%":"–"}</div>
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                <span style={{fontSize:11,color:"var(--color-text-secondary)"}}>Observance :</span>
+                {[["≥90%","#c0dd97"],["75–89%","#FAC775"],["50–74%","#F0997B"],["<50%","#E24B4A"]].map(([l,c])=>(
+                  <span key={l} style={{display:"flex",alignItems:"center",gap:4,fontSize:11,color:"var(--color-text-secondary)"}}>
+                    <span style={{width:12,height:12,borderRadius:2,background:c,display:"inline-block"}}></span>{l}
+                  </span>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -1470,9 +1560,9 @@ export default function App() {
         </div>
       )}
 
-      {/* Soignant · Réglages */}
-      {view==="soignant"&&careView==="settings"&&(
-        <div style={{background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"1rem 1.25rem"}}>
+      {/* Réglages (hors espace soignant : accessible via l'engrenage de l'en-tête) */}
+      {view==="settings"&&(
+        <div className="sm-view" style={{background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"1rem 1.25rem"}}>
           {/* Apparence : thème clair / sombre / automatique */}
           <p style={{fontWeight:500,marginBottom:4,fontSize:14}}>Apparence</p>
           <p style={{color:"var(--color-text-secondary)",fontSize:11,marginBottom:12,lineHeight:1.6}}>
