@@ -554,8 +554,9 @@ export default function App() {
   const [syncBusy, setSyncBusy] = useState(false);
   const [syncMsg,  setSyncMsg]  = useState("");
   const [saveStatus, setSaveStatus] = useState("saved");
-  const saveTimer = useRef(null);
-  const pendingSave = useRef(null);
+  // Écriture de prise en cours : une actualisation l'attend avant de lire le disque,
+  // pour ne jamais perdre une prise tout juste cochée.
+  const writePromiseRef = useRef(Promise.resolve());
   // Modifications locales pas encore envoyées au Drive (édit depuis le dernier push réussi).
   const dirtyRef = useRef(false);
   // Tirer pour rafraîchir (mobile)
@@ -564,6 +565,10 @@ export default function App() {
   const [refreshTick, setRefreshTick] = useState(0);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  // Miroir de `data` accessible synchronement (pour des coches rapides successives
+  // et l'écriture immédiate sans dépendre du cycle de rendu).
+  const dataRef = useRef(data);
+  dataRef.current = data;
   // Statut de la dernière planification des rappels, pour avertir dans les réglages
   // (permission notifications refusée, alarmes exactes non autorisées sur Android 14+).
   const [reminderStatus, setReminderStatus] = useState("");
@@ -685,49 +690,48 @@ export default function App() {
     return () => { if (handle) handle.remove(); };
   }, []);
 
-  // Écrit immédiatement la sauvegarde de prises en attente (si une édition vient
-  // d'avoir lieu et que le debounce de 400 ms n'a pas encore eu lieu) — appelé
-  // avant un pull pour ne pas perdre une prise tout juste cochée.
-  const flushSave = useCallback(async () => {
-    clearTimeout(saveTimer.current);
-    const pending = pendingSave.current;
-    if (!pending) return;
-    pendingSave.current = null;
-    try {
-      await saveFile(fileKey(pending.y, pending.m), pending.data);
-      setSaveStatus("saved");
-      // Replanifie APRÈS l'écriture : scheduleReminders relit le stockage, le faire
-      // avant (depuis setCell) lui ferait voir l'état d'avant la (dé)coche.
-      replanReminders(settingsRef.current);
-    } catch {
-      setSaveStatus("error");
-    }
-  }, [replanReminders]);
-
-  const persistData = useCallback((y, m, newData) => {
+  // Écrit immédiatement les prises sur le disque (aucun debounce) : une prise
+  // cochée est enregistrée sur-le-champ. Renvoie la promesse d'écriture, exposée
+  // via writePromiseRef pour qu'une actualisation puisse l'attendre.
+  const writeData = useCallback((y, m, newData) => {
     setSaveStatus("saving");
     dirtyRef.current = true;
-    clearTimeout(saveTimer.current);
-    pendingSave.current = { y, m, data: newData };
-    saveTimer.current = setTimeout(flushSave, 400);
-  }, [flushSave]);
+    const p = (async () => {
+      try {
+        await saveFile(fileKey(y, m), newData);
+        setSaveStatus("saved");
+        // Replanifie APRÈS l'écriture : scheduleReminders relit le stockage, le faire
+        // avant lui ferait voir l'état d'avant la (dé)coche.
+        replanReminders(settingsRef.current);
+      } catch {
+        setSaveStatus("error");
+      }
+    })();
+    writePromiseRef.current = p;
+    return p;
+  }, [replanReminders]);
 
-  // Met à jour la prise réelle d'un médicament pour un jour et un moment.
+  // Attend que l'écriture de prise en cours soit terminée — appelé avant un
+  // pull/reload pour ne jamais lire le disque pendant une sauvegarde.
+  const flushSave = useCallback(async () => {
+    try { await writePromiseRef.current; } catch {}
+  }, []);
+
+  // Met à jour la prise réelle d'un médicament pour un jour et un moment, et
+  // l'enregistre IMMÉDIATEMENT.
   const setCell = useCallback((day, medIdx, momentKey, val) => {
-    setData(prev => {
-      const next = { ...prev };
-      const dk = `d${day}`, mk = `med_${medIdx}`;
-      const dayObj = { ...(next[dk] || {}) };
-      const medObj = { ...(dayObj[mk] || {}) };
-      if (!val) delete medObj[momentKey]; else medObj[momentKey] = val;
-      if (Object.keys(medObj).length) dayObj[mk] = medObj; else delete dayObj[mk];
-      if (Object.keys(dayObj).length) next[dk] = dayObj; else delete next[dk];
-      persistData(year, month, next);
-      return next;
-    });
-    // La replanification des rappels a lieu dans flushSave, une fois la coche
-    // réellement écrite (sinon scheduleReminders relirait l'état périmé).
-  }, [year, month, persistData]);
+    const prev = dataRef.current;
+    const next = { ...prev };
+    const dk = `d${day}`, mk = `med_${medIdx}`;
+    const dayObj = { ...(next[dk] || {}) };
+    const medObj = { ...(dayObj[mk] || {}) };
+    if (!val) delete medObj[momentKey]; else medObj[momentKey] = val;
+    if (Object.keys(medObj).length) dayObj[mk] = medObj; else delete dayObj[mk];
+    if (Object.keys(dayObj).length) next[dk] = dayObj; else delete next[dk];
+    dataRef.current = next;          // synchrone : des coches rapides successives partent du bon état
+    setData(next);
+    writeData(year, month, next);    // sauvegarde immédiate
+  }, [year, month, writeData]);
 
   const days = daysInMonth(year, month);
   const cols = Array.from({ length: days }, (_, i) => i + 1);
