@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { App as CapacitorApp } from "@capacitor/app";
 import * as gdriveMobile from "./gdrive-mobile.js";
-import { setAlarms, cancelAlarms, canUseFullScreen, openFullScreenSettings, isBatteryUnrestricted, requestBatteryUnrestricted } from "./native-alarm.js";
+import { setAlarms, cancelAlarms, canUseFullScreen, openFullScreenSettings, isBatteryUnrestricted, requestBatteryUnrestricted, openBackgroundSettings } from "./native-alarm.js";
 
 // ── Electron bridge (falls back to localStorage in browser dev)
 const isElectron = !!window.electronAPI;
@@ -595,6 +595,8 @@ export default function App() {
     await requestBatteryUnrestricted();
     replanReminders(settingsRef.current);
   }, [replanReminders]);
+  // Ouvre les réglages d'arrière-plan du constructeur (best-effort, repli auto).
+  const openBg = useCallback(() => { openBackgroundSettings(); }, []);
   // Largeur de fenêtre → grille compacte sur petit écran (mobile).
   const [vw, setVw] = useState(typeof window !== "undefined" ? window.innerWidth : 1024);
   useEffect(() => {
@@ -1471,6 +1473,16 @@ export default function App() {
                 </p>
                 <button onClick={askBatteryExemption} style={{fontSize:12}}>
                   Optimiser la fiabilité de l'alarme
+                </button>
+              </div>
+            )}
+            {settings.reminders?.enabled && (settings.reminders?.mode ?? "alarm") === "alarm" && (
+              <div style={{marginTop:10}}>
+                <p style={{color:"var(--color-text-secondary)",fontSize:11,marginBottom:6,lineHeight:1.5}}>
+                  Alarme parfois en retard ? Certains téléphones (Xiaomi, Huawei, Oppo, Vivo… ou le mode veille de Samsung) restreignent les apps en arrière-plan. Ouvre les réglages pour autoriser SuiviMed.
+                </p>
+                <button onClick={openBg} style={{fontSize:12}}>
+                  Réglages d'arrière-plan
                 </button>
               </div>
             )}

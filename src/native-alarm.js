@@ -41,3 +41,11 @@ export async function requestBatteryUnrestricted() {
   if (!isNative()) return;
   try { await Alarm.requestIgnoreBatteryOptimizations(); } catch {}
 }
+
+// Ouvre l'écran « démarrage auto / arrière-plan » du constructeur (best-effort),
+// sinon la page « Infos de l'application ». Utile sur les OEM qui restreignent
+// agressivement l'arrière-plan (Xiaomi, Huawei, Oppo, Vivo, veille Samsung…).
+export async function openBackgroundSettings() {
+  if (!isNative()) return;
+  try { await Alarm.openBackgroundSettings(); } catch {}
+}
