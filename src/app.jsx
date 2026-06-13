@@ -1049,39 +1049,55 @@ export default function App() {
     <div style={{fontSize:13,color:"var(--color-text-primary)"}}>
 
       {/* Header */}
-      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14,flexWrap:"wrap"}}>
-        <span style={{fontSize:18,fontWeight:500,flex:1}}>SuiviMed</span>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:18,flexWrap:"wrap"}}>
+        <div style={{display:"flex",alignItems:"center",gap:11,flex:"1 1 220px",minWidth:0}}>
+          <span style={{width:36,height:36,borderRadius:11,background:"var(--brand-grad)",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"var(--shadow-sm)",flex:"0 0 auto"}}>
+            <i className="ti ti-pill" style={{fontSize:20,color:"#fff"}} aria-hidden="true"></i>
+          </span>
+          <span style={{fontSize:21,fontWeight:700,letterSpacing:-0.4}}>SuiviMed</span>
 
-        <span style={{fontSize:11,color:saveStatus==="error"?"var(--color-text-danger)":"var(--color-text-tertiary)",display:"flex",alignItems:"center",gap:4}}>
-          {saveStatus==="saving" && <><i className="ti ti-loader-2" style={{fontSize:12}} aria-hidden="true"></i> Sauvegarde…</>}
-          {saveStatus==="saved"  && <><i className="ti ti-check"    style={{fontSize:12}} aria-hidden="true"></i> Sauvegardé</>}
-          {saveStatus==="error"  && <><i className="ti ti-alert-circle" style={{fontSize:12}} aria-hidden="true"></i> Erreur</>}
-        </span>
+          {saveStatus && (
+            <span style={{
+              display:"inline-flex",alignItems:"center",gap:4,fontSize:11,fontWeight:600,padding:"3px 9px",borderRadius:999,
+              color: saveStatus==="error" ? "var(--color-text-danger)" : saveStatus==="saving" ? "var(--color-text-secondary)" : "var(--color-text-success)",
+              background: saveStatus==="error" ? "var(--color-background-danger)" : saveStatus==="saving" ? "var(--color-background-secondary)" : "#e7f7ee",
+            }}>
+              {saveStatus==="saving" && <><i className="ti ti-loader-2" style={{fontSize:12}} aria-hidden="true"></i> Sauvegarde…</>}
+              {saveStatus==="saved"  && <><i className="ti ti-check"    style={{fontSize:12}} aria-hidden="true"></i> Enregistré</>}
+              {saveStatus==="error"  && <><i className="ti ti-alert-circle" style={{fontSize:12}} aria-hidden="true"></i> Erreur</>}
+            </span>
+          )}
+        </div>
 
-        {isElectron
-          ? <button onClick={handleImportJSON} style={{display:"flex",alignItems:"center",gap:5,fontSize:12}}><i className="ti ti-upload" aria-hidden="true"></i> Importer</button>
-          : <label style={{cursor:"pointer",display:"inline-flex",alignItems:"center",gap:5,border:"0.5px solid var(--color-border-secondary)",borderRadius:"var(--border-radius-md)",padding:"5px 10px",fontSize:12}}>
-              <i className="ti ti-upload" aria-hidden="true"></i> Importer
-              <input type="file" accept=".json" onChange={handleImportJSON} style={{display:"none"}}/>
-            </label>
-        }
-        <button onClick={handleExportJSON} style={{display:"flex",alignItems:"center",gap:5,fontSize:12}}><i className="ti ti-download" aria-hidden="true"></i> Exporter</button>
-        <button onClick={()=>exportPDF(year,month,data,settings,aiResult)} style={{display:"flex",alignItems:"center",gap:5,fontSize:12}}><i className="ti ti-file-type-pdf" aria-hidden="true"></i> PDF</button>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",flex:"0 0 auto"}}>
+          {isElectron
+            ? <button onClick={handleImportJSON} style={{display:"flex",alignItems:"center",gap:5,fontSize:12}}><i className="ti ti-upload" aria-hidden="true"></i> Importer</button>
+            : <label style={{cursor:"pointer",display:"inline-flex",alignItems:"center",gap:5,border:"1px solid var(--color-border-secondary)",borderRadius:"var(--border-radius-md)",padding:"7px 11px",fontSize:12,background:"#fff"}}>
+                <i className="ti ti-upload" aria-hidden="true"></i> Importer
+                <input type="file" accept=".json" onChange={handleImportJSON} style={{display:"none"}}/>
+              </label>
+          }
+          <button onClick={handleExportJSON} style={{display:"flex",alignItems:"center",gap:5,fontSize:12}}><i className="ti ti-download" aria-hidden="true"></i> Exporter</button>
+          <button onClick={()=>exportPDF(year,month,data,settings,aiResult)} style={{display:"flex",alignItems:"center",gap:5,fontSize:12}}><i className="ti ti-file-type-pdf" aria-hidden="true"></i> PDF</button>
+        </div>
       </div>
 
-      {/* Tabs */}
-      <div style={{display:"flex",marginBottom:16,borderBottom:"0.5px solid var(--color-border-tertiary)",overflowX:"auto"}}>
-        {tabs.map(t=>(
-          <button key={t.id} onClick={()=>setView(t.id)} style={{
-            display:"flex",alignItems:"center",gap:5,padding:"8px 12px",fontSize:12,whiteSpace:"nowrap",
-            border:"none",borderBottom:view===t.id?"2px solid var(--color-text-info)":"2px solid transparent",
-            borderRadius:0,background:"transparent",
-            color:view===t.id?"var(--color-text-info)":"var(--color-text-secondary)",
-            fontWeight:view===t.id?500:400,cursor:"pointer"
-          }}>
-            <i className={`ti ${t.icon}`} aria-hidden="true"></i>{t.label}
-          </button>
-        ))}
+      {/* Tabs (segmented) */}
+      <div style={{display:"flex",marginBottom:18,overflowX:"auto"}}>
+        <div style={{display:"inline-flex",background:"var(--color-background-secondary)",borderRadius:12,padding:4,gap:2}}>
+          {tabs.map(t=>(
+            <button key={t.id} onClick={()=>setView(t.id)} style={{
+              display:"flex",alignItems:"center",gap:6,padding:"7px 14px",fontSize:12.5,whiteSpace:"nowrap",
+              border:"none",borderRadius:9,
+              background:view===t.id?"var(--color-background-primary)":"transparent",
+              boxShadow:view===t.id?"var(--shadow-sm)":"none",
+              color:view===t.id?"var(--brand-strong)":"var(--color-text-secondary)",
+              fontWeight:view===t.id?600:500,cursor:"pointer"
+            }}>
+              <i className={`ti ${t.icon}`} aria-hidden="true"></i>{t.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Month nav (observance) */}
@@ -1103,9 +1119,9 @@ export default function App() {
                 <button key={p} onClick={()=>setPeriod(p)} style={{padding:"5px 14px",fontSize:12,borderRadius:999,border:"none",cursor:"pointer",background:period===p?"var(--color-background-primary)":"transparent",color:period===p?"var(--color-text-info)":"var(--color-text-secondary)",fontWeight:period===p?600:400,boxShadow:period===p?"0 1px 2px rgba(0,0,0,0.08)":"none"}}>{L}</button>
               ))}
             </div>
-            <div style={{display:"flex",alignItems:"center",gap:8,flex:1,justifyContent:"center"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,flex:"1 1 210px",justifyContent:"center",minWidth:0}}>
               <button onClick={prevPeriod} aria-label="Précédent"><i className="ti ti-chevron-left" aria-hidden="true"></i></button>
-              <span style={{fontWeight:500,minWidth:compact?120:170,textAlign:"center",textTransform:"capitalize",fontSize:13}}>{rangeLabel}</span>
+              <span style={{fontWeight:500,minWidth:compact?110:170,textAlign:"center",textTransform:"capitalize",fontSize:13,whiteSpace:"nowrap"}}>{rangeLabel}</span>
               <button onClick={nextPeriod} aria-label="Suivant"><i className="ti ti-chevron-right" aria-hidden="true"></i></button>
             </div>
             <button onClick={goToday} style={{fontSize:12,padding:"5px 10px",display:"flex",alignItems:"center",gap:5}}><i className="ti ti-calendar-event" aria-hidden="true"></i> Aujourd'hui</button>
@@ -1581,7 +1597,7 @@ function MomentCell({P,T,onChange,cell=34}){
     glyph = prevu ? "○" : "–";
     col = prevu ? "var(--color-text-danger)" : "var(--color-text-tertiary)";
   }
-  const bg = prevu ? "rgba(55,138,221,0.07)" : "transparent";
+  const bg = prevu ? "rgba(8,145,178,0.08)" : "transparent";
   const title = `${prevu ? `Prévu : ${fmtDose(P)}` : "Non prévu"} · ${taken ? "pris" : "non pris"}`
     + (!taken && prevu ? " — oubli" : "")
     + (taken && !prevu ? " — pris hors prescription" : "");
@@ -1610,19 +1626,29 @@ function DayView({ meds, data, year, month, day, onToggle }){
     return <p style={{textAlign:"center",color:"var(--color-text-secondary)",margin:"32px 0",fontSize:14}}>Aucune prise prévue ce jour.</p>;
   }
   return (
-    <div style={{display:"grid",gap:14}}>
-      {sections.map(({mo,items,done})=>(
-        <div key={mo.key} style={{border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",overflow:"hidden",background:"var(--color-background-primary)"}}>
-          <div style={{display:"flex",alignItems:"center",gap:8,padding:"11px 16px",background:"var(--color-background-secondary)"}}>
-            <i className={`ti ${mo.icon}`} style={{fontSize:18,color:"var(--color-text-info)"}} aria-hidden="true"></i>
+    <div className="sm-view" style={{display:"grid",gap:14}}>
+      {sections.map(({mo,items,done})=>{
+        const allDone = done===items.length;
+        const pct = items.length ? Math.round(done/items.length*100) : 0;
+        return (
+        <div key={mo.key} style={{border:"1px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",overflow:"hidden",background:"var(--color-background-primary)",boxShadow:"var(--shadow-sm)"}}>
+          <div style={{display:"flex",alignItems:"center",gap:11,padding:"12px 16px"}}>
+            <span style={{width:32,height:32,borderRadius:9,background:"var(--brand-soft)",display:"flex",alignItems:"center",justifyContent:"center",flex:"0 0 auto"}}>
+              <i className={`ti ${mo.icon}`} style={{fontSize:18,color:"var(--brand-strong)"}} aria-hidden="true"></i>
+            </span>
             <span style={{fontWeight:600,fontSize:15,flex:1}}>{mo.label}</span>
-            <span style={{fontSize:12,color:done===items.length?"var(--color-text-success)":"var(--color-text-secondary)",fontWeight:500}}>{done}/{items.length} pris</span>
+            <span style={{fontSize:12,fontWeight:600,padding:"3px 10px",borderRadius:999,color:allDone?"var(--color-text-success)":"var(--color-text-secondary)",background:allDone?"#e7f7ee":"var(--color-background-secondary)"}}>
+              {allDone ? "✓ Terminé" : `${done}/${items.length}`}
+            </span>
+          </div>
+          <div style={{height:3,background:"var(--color-border-tertiary)"}}>
+            <div style={{height:"100%",width:`${pct}%`,background:allDone?"var(--color-text-success)":"var(--brand)",transition:"width .3s ease"}} />
           </div>
           {items.map(({med,i,P,taken})=>(
             <IntakeRow key={i} name={med.name||"(sans nom)"} note={med.note} P={P} taken={taken} past={past} onClick={()=>onToggle(day,i,mo.key, taken?0:1)} />
           ))}
         </div>
-      ))}
+      );})}
     </div>
   );
 }
@@ -1638,8 +1664,8 @@ function IntakeRow({ name, note, P, taken, past, onClick }){
   else                         { circleIcon="ti-circle";              circleColor="var(--color-text-tertiary)";status="—";         statusColor="var(--color-text-tertiary)"; }
   const sub = [prescribed ? `dose ${fmtDose(P)}` : "", note || ""].filter(Boolean).join(" · ");
   return (
-    <button onClick={onClick} style={{width:"100%",display:"flex",alignItems:"center",gap:12,padding:"13px 16px",border:"none",borderTop:"0.5px solid var(--color-border-tertiary)",background:"transparent",cursor:"pointer",textAlign:"left",minHeight:56}}>
-      <i className={`ti ${circleIcon}`} style={{fontSize:24,color:circleColor,flex:"0 0 auto"}} aria-hidden="true"></i>
+    <button onClick={onClick} style={{width:"100%",display:"flex",alignItems:"center",gap:12,padding:"13px 16px",border:"none",borderTop:"1px solid var(--color-border-tertiary)",borderRadius:0,background:taken?"rgba(21,128,61,0.055)":"transparent",cursor:"pointer",textAlign:"left",minHeight:58,transition:"background .15s ease"}}>
+      <i className={`ti ${circleIcon}`} style={{fontSize:25,color:circleColor,flex:"0 0 auto"}} aria-hidden="true"></i>
       <span style={{flex:1,minWidth:0}}>
         <span style={{display:"block",fontWeight:500,fontSize:14,color:"var(--color-text-primary)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{name}</span>
         {sub && <span style={{display:"block",fontSize:12,color:"var(--color-text-tertiary)"}}>{sub}</span>}
