@@ -1917,12 +1917,12 @@ function IntakeRow({ name, note, P, taken, past, onClick }){
   else                         { circleIcon="ti-circle";              circleColor="var(--color-text-tertiary)";status="—";         statusColor="var(--color-text-tertiary)"; }
   const doseText = prescribed ? [fmtDose(P), note].filter(Boolean).join(" · ") : (note || "");
   return (
-    <button onClick={onClick} style={{width:"100%",display:"flex",alignItems:"center",gap:15,padding:"17px 16px",border:"none",borderTop:"1px solid var(--color-border-tertiary)",borderRadius:0,background:taken?"rgba(21,128,61,0.08)":"transparent",cursor:"pointer",textAlign:"left",minHeight:78,transition:"background .15s ease"}}>
-      <i className={`ti ${circleIcon}`} style={{fontSize:38,color:circleColor,flex:"0 0 auto"}} aria-hidden="true"></i>
+    <button onClick={onClick} style={{width:"100%",display:"flex",alignItems:"center",gap:13,padding:"14px 16px",border:"none",borderTop:"1px solid var(--color-border-tertiary)",borderRadius:0,background:taken?"rgba(21,128,61,0.08)":"transparent",cursor:"pointer",textAlign:"left",minHeight:66,transition:"background .15s ease"}}>
+      <i className={`ti ${circleIcon}`} style={{fontSize:30,color:circleColor,flex:"0 0 auto"}} aria-hidden="true"></i>
       <div style={{flex:1,minWidth:0,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-        <span style={{fontWeight:700,fontSize:20,color:"var(--color-text-primary)",lineHeight:1.2}}>{name}</span>
+        <span style={{fontWeight:700,fontSize:17,color:"var(--color-text-primary)",lineHeight:1.2}}>{name}</span>
         {doseText && (
-          <span style={{fontSize:16,fontWeight:700,color:"var(--brand-strong)",background:"var(--brand-soft)",padding:"4px 13px",borderRadius:999,lineHeight:1.3,whiteSpace:"nowrap"}}>{doseText}</span>
+          <span style={{fontSize:17,fontWeight:700,color:"var(--brand-strong)",background:"var(--brand-soft)",padding:"4px 13px",borderRadius:999,lineHeight:1.3,whiteSpace:"nowrap"}}>{doseText}</span>
         )}
         <span style={{fontSize:14,fontWeight:700,color:statusColor,whiteSpace:"nowrap"}}>· {status}</span>
       </div>
