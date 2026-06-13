@@ -1884,12 +1884,12 @@ function DayView({ meds, data, year, month, day, onToggle }){
         const pct = items.length ? Math.round(done/items.length*100) : 0;
         return (
         <div key={mo.key} style={{border:"1px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",overflow:"hidden",background:"var(--color-background-primary)",boxShadow:"var(--shadow-sm)"}}>
-          <div style={{display:"flex",alignItems:"center",gap:11,padding:"12px 16px"}}>
-            <span style={{width:32,height:32,borderRadius:9,background:"var(--brand-soft)",display:"flex",alignItems:"center",justifyContent:"center",flex:"0 0 auto"}}>
-              <i className={`ti ${mo.icon}`} style={{fontSize:18,color:"var(--brand-strong)"}} aria-hidden="true"></i>
+          <div style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px"}}>
+            <span style={{width:38,height:38,borderRadius:10,background:"var(--brand-soft)",display:"flex",alignItems:"center",justifyContent:"center",flex:"0 0 auto"}}>
+              <i className={`ti ${mo.icon}`} style={{fontSize:21,color:"var(--brand-strong)"}} aria-hidden="true"></i>
             </span>
-            <span style={{fontWeight:600,fontSize:15,flex:1}}>{mo.label}</span>
-            <span style={{fontSize:12,fontWeight:600,padding:"3px 10px",borderRadius:999,color:allDone?"var(--color-text-success)":"var(--color-text-secondary)",background:allDone?"#e7f7ee":"var(--color-background-secondary)"}}>
+            <span style={{fontWeight:700,fontSize:18,flex:1}}>{mo.label}</span>
+            <span style={{fontSize:13,fontWeight:700,padding:"4px 12px",borderRadius:999,color:allDone?"var(--color-text-success)":"var(--color-text-secondary)",background:allDone?"#e7f7ee":"var(--color-background-secondary)"}}>
               {allDone ? "✓ Terminé" : `${done}/${items.length}`}
             </span>
           </div>
@@ -1905,24 +1905,27 @@ function DayView({ meds, data, year, month, day, onToggle }){
   );
 }
 
-// Une ligne « médicament à prendre » dans la vue Jour : pleine largeur, gros
-// tap target, coche à gauche, statut à droite.
+// Une ligne « médicament à prendre » dans la vue Jour. Pensée pour une personne
+// âgée à la vue fragile : grand tap target, nom en gros, DOSE en pastille bien
+// lisible À CÔTÉ du nom (pas en dessous), statut clair à droite.
 function IntakeRow({ name, note, P, taken, past, onClick }){
   const prescribed = P > 0;
   let circleIcon, circleColor, status, statusColor;
   if (taken)                   { circleIcon="ti-circle-check-filled"; circleColor="var(--color-text-success)"; status="Pris";      statusColor="var(--color-text-success)"; }
   else if (prescribed && past) { circleIcon="ti-circle";              circleColor="var(--color-text-danger)";  status="Oublié";    statusColor="var(--color-text-danger)"; }
-  else if (prescribed)         { circleIcon="ti-circle";              circleColor="var(--color-text-info)";    status="À prendre"; statusColor="var(--color-text-info)"; }
+  else if (prescribed)         { circleIcon="ti-circle";              circleColor="var(--brand-strong)";       status="À prendre"; statusColor="var(--brand-strong)"; }
   else                         { circleIcon="ti-circle";              circleColor="var(--color-text-tertiary)";status="—";         statusColor="var(--color-text-tertiary)"; }
-  const sub = [prescribed ? `dose ${fmtDose(P)}` : "", note || ""].filter(Boolean).join(" · ");
+  const doseText = prescribed ? [fmtDose(P), note].filter(Boolean).join(" · ") : (note || "");
   return (
-    <button onClick={onClick} style={{width:"100%",display:"flex",alignItems:"center",gap:12,padding:"13px 16px",border:"none",borderTop:"1px solid var(--color-border-tertiary)",borderRadius:0,background:taken?"rgba(21,128,61,0.055)":"transparent",cursor:"pointer",textAlign:"left",minHeight:58,transition:"background .15s ease"}}>
-      <i className={`ti ${circleIcon}`} style={{fontSize:25,color:circleColor,flex:"0 0 auto"}} aria-hidden="true"></i>
-      <span style={{flex:1,minWidth:0}}>
-        <span style={{display:"block",fontWeight:500,fontSize:14,color:"var(--color-text-primary)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{name}</span>
-        {sub && <span style={{display:"block",fontSize:12,color:"var(--color-text-tertiary)"}}>{sub}</span>}
-      </span>
-      <span style={{fontSize:12,fontWeight:600,color:statusColor,flex:"0 0 auto"}}>{status}</span>
+    <button onClick={onClick} style={{width:"100%",display:"flex",alignItems:"center",gap:15,padding:"17px 16px",border:"none",borderTop:"1px solid var(--color-border-tertiary)",borderRadius:0,background:taken?"rgba(21,128,61,0.08)":"transparent",cursor:"pointer",textAlign:"left",minHeight:78,transition:"background .15s ease"}}>
+      <i className={`ti ${circleIcon}`} style={{fontSize:38,color:circleColor,flex:"0 0 auto"}} aria-hidden="true"></i>
+      <div style={{flex:1,minWidth:0,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+        <span style={{fontWeight:700,fontSize:20,color:"var(--color-text-primary)",lineHeight:1.2}}>{name}</span>
+        {doseText && (
+          <span style={{fontSize:16,fontWeight:700,color:"var(--brand-strong)",background:"var(--brand-soft)",padding:"4px 13px",borderRadius:999,lineHeight:1.3,whiteSpace:"nowrap"}}>{doseText}</span>
+        )}
+        <span style={{fontSize:14,fontWeight:700,color:statusColor,whiteSpace:"nowrap"}}>· {status}</span>
+      </div>
     </button>
   );
 }
