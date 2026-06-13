@@ -2,9 +2,6 @@ package com.xyvel.suivimed;
 
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
-import android.content.ContentResolver;
-import android.media.AudioAttributes;
-import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 
@@ -12,54 +9,44 @@ import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
 
-    // Canal des rappels de prise. Créé NATIVEMENT (et non via l'API JS du plugin)
-    // pour pouvoir utiliser USAGE_ALARM : le son passe alors par le flux « alarme »
-    // d'Android — volume d'alarme (fort), et surtout il sonne même en mode
-    // silencieux / vibreur / Ne pas déranger, contrairement au flux notification.
-    // L'API JS LocalNotifications.createChannel force USAGE_NOTIFICATION et ne
-    // permet donc pas ce comportement d'alarme.
-    //
-    // ID versionné : un canal est IMMUABLE une fois créé. Pour changer le son ou
-    // les attributs audio, il faut un nouvel ID (l'ancien canal silencieux reste
-    // sinon en place sur les installations existantes).
-    public static final String ALARM_CHANNEL_ID = "rappels_alarme_v1";
+    // Canal de l'alarme plein écran. La sonnerie elle-même est jouée par AlarmActivity
+    // (MediaPlayer sur le flux ALARME), donc ce canal est SILENCIEUX : il ne sert qu'à
+    // porter le full-screen intent qui réveille l'écran. Importance HIGH = requis pour
+    // que le full-screen intent se déclenche.
+    public static final String ALARM_CHANNEL_ID = "rappels_alarme_v2";
+
+    // Canal du mode « push uniquement » : notification classique (flux notification),
+    // son par défaut, sans réveil d'écran.
+    public static final String PUSH_CHANNEL_ID = "rappels_push_v1";
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        // Plugin natif d'alarme (planification AlarmManager + activité plein écran),
+        // enregistré avant super.onCreate comme l'exige Capacitor.
+        registerPlugin(AlarmPlugin.class);
         super.onCreate(savedInstanceState);
-        createAlarmChannel();
+        createChannels();
     }
 
-    private void createAlarmChannel() {
+    private void createChannels() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
-
         NotificationManager nm = getSystemService(NotificationManager.class);
         if (nm == null) return;
 
-        NotificationChannel channel = new NotificationChannel(
-            ALARM_CHANNEL_ID,
-            "Alarme de prise",
-            NotificationManager.IMPORTANCE_HIGH // bandeau + son
-        );
-        channel.setDescription("Sonnerie d'alarme pour ne pas oublier la prise des médicaments");
+        NotificationChannel alarm = new NotificationChannel(
+            ALARM_CHANNEL_ID, "Alarme de prise", NotificationManager.IMPORTANCE_HIGH);
+        alarm.setDescription("Alarme plein écran pour la prise des médicaments");
+        alarm.setSound(null, null); // le son vient d'AlarmActivity (MediaPlayer)
+        alarm.enableVibration(true);
+        alarm.setVibrationPattern(new long[]{ 0, 600, 300, 600, 300, 600 });
+        alarm.setLockscreenVisibility(android.app.Notification.VISIBILITY_PUBLIC);
+        nm.createNotificationChannel(alarm);
 
-        // Flux ALARME : volume d'alarme, ignore le mode silencieux et passe outre
-        // « Ne pas déranger » (les alarmes sont autorisées par défaut en DND).
-        AudioAttributes audioAttributes = new AudioAttributes.Builder()
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-            .setUsage(AudioAttributes.USAGE_ALARM)
-            .build();
-
-        Uri soundUri = Uri.parse(
-            ContentResolver.SCHEME_ANDROID_RESOURCE + "://" + getPackageName() + "/raw/alarme_prise"
-        );
-        channel.setSound(soundUri, audioAttributes);
-
-        channel.enableVibration(true);
-        channel.setVibrationPattern(new long[]{ 0, 600, 300, 600, 300, 600 });
-        channel.setLockscreenVisibility(android.app.Notification.VISIBILITY_PUBLIC);
-        channel.enableLights(true);
-
-        nm.createNotificationChannel(channel);
+        NotificationChannel push = new NotificationChannel(
+            PUSH_CHANNEL_ID, "Rappels (notification)", NotificationManager.IMPORTANCE_HIGH);
+        push.setDescription("Notification de rappel pour la prise des médicaments");
+        push.enableVibration(true);
+        push.setLockscreenVisibility(android.app.Notification.VISIBILITY_PUBLIC);
+        nm.createNotificationChannel(push);
     }
 }

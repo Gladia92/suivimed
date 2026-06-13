@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { App as CapacitorApp } from "@capacitor/app";
 import * as gdriveMobile from "./gdrive-mobile.js";
+import { setAlarms, cancelAlarms, canUseFullScreen, openFullScreenSettings } from "./native-alarm.js";
 
 // ── Electron bridge (falls back to localStorage in browser dev)
 const isElectron = !!window.electronAPI;
@@ -21,12 +22,43 @@ const sync = {
 // rappels supplémentaires toutes les 5 min après l'heure prévue par moment.
 const REMINDER_WINDOW_DAYS = 3;
 const REMINDER_REPEATS = 12; // 12 rappels de 5 min = jusqu'à 1h après l'heure prévue
+// Canal du mode « push uniquement » (notification classique). Le canal d'alarme,
+// lui, est créé nativement (USAGE_ALARM + full-screen) dans MainActivity.
+const PUSH_CHANNEL = "rappels_push_v1";
 
-// Rappels de prise (mobile) : pour chaque moment (matin/midi/soir) ayant une heure
-// configurée, une alarme quotidienne native (cron `on`, qui survit même si l'app
-// n'est pas rouverte pendant des jours) + des relances toutes les 5 min tant que la
-// prise du jour n'est pas notée, sur une fenêtre de quelques jours.
-// Retourne un statut pour l'UI : "ok" | "inexact" | "no-permission" | "disabled" | "unavailable".
+// Construit la liste des créneaux de rappel pour un moment donné : l'heure prévue
+// (r=0) puis des relances toutes les 5 min (r=1..REPEATS), sur la fenêtre de jours,
+// en sautant aujourd'hui si la prise est déjà notée. Renvoie [{ day, r, at }].
+function reminderSlots(reminders, meds, base, now, mo, todayData){
+  const t = reminders[mo.key]; if (!t) return [];
+  const [h, mi] = String(t).split(":").map(Number);
+  if (isNaN(h) || isNaN(mi)) return [];
+  const slots = [];
+  for (let day = 0; day < REMINDER_WINDOW_DAYS; day++) {
+    const dt = new Date(base.getFullYear(), base.getMonth(), base.getDate() + day);
+    const ds = dateStr(dt.getFullYear(), dt.getMonth(), dt.getDate());
+    const prescribedIdx = [];
+    meds.forEach((med, i) => { if (prescribedDose(med, ds, mo.key) > 0) prescribedIdx.push(i); });
+    if (!prescribedIdx.length) continue;
+    // Aujourd'hui : si tout est déjà pris pour ce moment, on ne programme rien.
+    if (day === 0 && prescribedIdx.every(i => takenDose(todayData, i, mo.key) > 0)) continue;
+    for (let r = 0; r <= REMINDER_REPEATS; r++) {
+      const at = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), h, mi + r * 5, 0, 0);
+      if (at <= now) continue;
+      slots.push({ day, r, at });
+    }
+  }
+  return slots;
+}
+
+// Rappels de prise (mobile). Deux modes (réglage `reminders.mode`) :
+//  - "alarm" (défaut) : vraie alarme plein écran qui RÉVEILLE L'ÉCRAN même verrouillé,
+//    son fort ~30 s sur le flux alarme + bouton d'arrêt (plugin natif Alarm).
+//  - "push" : notification classique (plugin @capacitor/local-notifications).
+// Dans les deux cas : l'heure prévue puis des relances toutes les 5 min tant que la
+// prise n'est pas cochée. Cocher la prise replanifie et annule les relances restantes.
+// Retourne un statut UI : "ok" | "ok-alarm" | "inexact" | "no-permission"
+//                       | "no-fullscreen" | "disabled" | "unavailable".
 async function scheduleReminders(settings){
   if (!isCapacitor) return "unavailable";
   let LN;
@@ -39,75 +71,64 @@ async function scheduleReminders(settings){
   const now = new Date();
   const base = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-  const allIds = [];
-  for (let mi = 0; mi < MOMENTS.length; mi++) allIds.push(1000 + mi);
+  // Tous les ids possibles (mode push) pour l'annulation côté plugin.
+  const pushIds = [];
   for (let day = 0; day < REMINDER_WINDOW_DAYS; day++)
     for (let mi = 0; mi < MOMENTS.length; mi++)
       for (let r = 0; r <= REMINDER_REPEATS; r++)
-        allIds.push(day * 100 + mi * 20 + r);
+        pushIds.push(day * 100 + mi * 20 + r);
 
   try {
-    await LN.cancel({ notifications: allIds.map(id => ({ id })) }).catch(()=>{});
+    // On annule TOUJOURS les deux systèmes (indispensable au changement de mode).
+    await LN.cancel({ notifications: pushIds.map(id => ({ id })) }).catch(()=>{});
+    await cancelAlarms();
+
     const reminders = settings?.reminders;
     if (!reminders?.enabled) return "disabled";
     const perm = await LN.requestPermissions();
     if (perm.display !== "granted") return "no-permission";
 
-    // Le canal "rappels_alarme_v1" est créé NATIVEMENT au démarrage (MainActivity)
-    // avec USAGE_ALARM : son sur le flux d'alarme (fort, ignore silencieux/Ne pas
-    // déranger). On ne le (re)crée pas ici — l'API JS forcerait USAGE_NOTIFICATION
-    // et un canal est immuable une fois créé.
-
+    const mode = reminders.mode === "push" ? "push" : "alarm";
     const meds = (settings.meds || []).map(medOf);
     const todayData = (await loadMonth(base.getFullYear(), base.getMonth()))[`d${base.getDate()}`];
 
-    const items = [];
-    MOMENTS.forEach((mo, mIdx) => {
-      const t = reminders[mo.key]; if (!t) return;
-      const [h, mi] = String(t).split(":").map(Number);
-      if (isNaN(h) || isNaN(mi)) return;
-
-      let anyPrescribed = false;
-      for (let day = 0; day < REMINDER_WINDOW_DAYS; day++) {
-        const dt = new Date(base.getFullYear(), base.getMonth(), base.getDate() + day);
-        const ds = dateStr(dt.getFullYear(), dt.getMonth(), dt.getDate());
-
-        const prescribedIdx = [];
-        meds.forEach((med, i) => { if (prescribedDose(med, ds, mo.key) > 0) prescribedIdx.push(i); });
-        if (!prescribedIdx.length) continue;
-        anyPrescribed = true;
-
-        if (day === 0 && prescribedIdx.every(i => takenDose(todayData, i, mo.key) > 0)) continue;
-
-        for (let r = 1; r <= REMINDER_REPEATS; r++) {
-          const at = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), h, mi + r * 5, 0, 0);
-          if (at <= now) continue;
-          items.push({
+    if (mode === "alarm") {
+      // Liste de créneaux concrets poussée au plugin natif (planification AlarmManager).
+      const alarms = [];
+      MOMENTS.forEach((mo, mIdx) => {
+        for (const { day, r, at } of reminderSlots(reminders, meds, base, now, mo, todayData)) {
+          alarms.push({
             id: day * 100 + mIdx * 20 + r,
+            at: at.getTime(),
             title: "💊 Prise du " + mo.label.toLowerCase(),
-            body: "Rappel : prise pas encore notée.",
-            schedule: { at, allowWhileIdle: true },
-            channelId: "rappels_alarme_v1",
+            body: r === 0 ? "C'est l'heure de ta prise." : "Rappel : prise pas encore notée.",
           });
         }
-      }
+      });
+      await setAlarms(alarms);
+      // Android 14+ : sans l'autorisation « plein écran », l'écran peut ne pas
+      // s'allumer quand l'appareil est déverrouillé.
+      if (!(await canUseFullScreen())) return "no-fullscreen";
+      return "ok-alarm";
+    }
 
-      // Alarme de base : cron quotidien natif, indépendant de la fenêtre ci-dessus —
-      // continue de sonner chaque jour même si l'app n'est plus rouverte.
-      if (anyPrescribed) {
+    // Mode "push" : notifications classiques via le plugin, sur le canal notification.
+    const items = [];
+    MOMENTS.forEach((mo, mIdx) => {
+      for (const { day, r, at } of reminderSlots(reminders, meds, base, now, mo, todayData)) {
         items.push({
-          id: 1000 + mIdx,
+          id: day * 100 + mIdx * 20 + r,
           title: "💊 Prise du " + mo.label.toLowerCase(),
-          body: "N'oublie pas ta prise de médicament.",
-          schedule: { on: { hour: h, minute: mi }, allowWhileIdle: true },
-          channelId: "rappels_alarme_v1",
+          body: r === 0 ? "N'oublie pas ta prise de médicament." : "Rappel : prise pas encore notée.",
+          schedule: { at, allowWhileIdle: true },
+          channelId: PUSH_CHANNEL,
         });
       }
     });
     if (items.length) await LN.schedule({ notifications: items });
 
     // Android 14+ : les alarmes exactes sont refusées par défaut ; sans elles les
-    // rappels partent en retard (mode Doze). On remonte l'info à l'UI.
+    // notifications partent en retard (mode Doze). On remonte l'info à l'UI.
     try {
       const ex = await LN.checkExactNotificationSetting();
       if (ex?.exact_alarm && ex.exact_alarm !== "granted") return "inexact";
@@ -558,6 +579,11 @@ export default function App() {
     } catch {}
     replanReminders(settingsRef.current);
   }, [replanReminders]);
+  // Ouvre l'écran « Notifications plein écran » (Android 14+) puis replanifie.
+  const openFullScreen = useCallback(async () => {
+    await openFullScreenSettings();
+    replanReminders(settingsRef.current);
+  }, [replanReminders]);
   // Largeur de fenêtre → grille compacte sur petit écran (mobile).
   const [vw, setVw] = useState(typeof window !== "undefined" ? window.innerWidth : 1024);
   useEffect(() => {
@@ -847,7 +873,7 @@ export default function App() {
   const saveSettings = (s) => { dirtyRef.current = true; setSettings(s); saveFile(settingsFile(), s); };
   const updateProfile = (patch) => saveSettings({ ...settings, profile: { ...(settings.profile||{}), ...patch } });
   const updateReminders = (patch) => {
-    const r = { enabled:false, matin:"08:00", midi:"12:00", soir:"20:00", ...(settings.reminders||{}), ...patch };
+    const r = { enabled:false, mode:"alarm", matin:"08:00", midi:"12:00", soir:"20:00", ...(settings.reminders||{}), ...patch };
     const s = { ...settings, reminders: r };
     saveSettings(s);
     replanReminders(s);
@@ -1391,6 +1417,33 @@ export default function App() {
                     <input type="time" value={settings.reminders?.[k] || ""} onChange={e=>updateReminders({[k]:e.target.value})} style={{fontSize:13}}/>
                   </label>
                 ))}
+              </div>
+            )}
+            {settings.reminders?.enabled && (
+              <div style={{marginTop:14}}>
+                <p style={{fontWeight:500,fontSize:12,marginBottom:6}}>Type de rappel</p>
+                <label style={{display:"flex",alignItems:"flex-start",gap:8,fontSize:12,marginBottom:8,cursor:"pointer"}}>
+                  <input type="radio" name="reminderMode" style={{marginTop:2}}
+                    checked={(settings.reminders?.mode ?? "alarm") === "alarm"}
+                    onChange={()=>updateReminders({mode:"alarm"})}/>
+                  <span><strong>Alarme + notification</strong> — réveille l'écran, son fort de 30 s qui resonne toutes les 5 min jusqu'à ce que tu coches la prise (avec bouton d'arrêt).</span>
+                </label>
+                <label style={{display:"flex",alignItems:"flex-start",gap:8,fontSize:12,cursor:"pointer"}}>
+                  <input type="radio" name="reminderMode" style={{marginTop:2}}
+                    checked={settings.reminders?.mode === "push"}
+                    onChange={()=>updateReminders({mode:"push"})}/>
+                  <span><strong>Notification uniquement</strong> — simple notification sonore, sans réveil d'écran.</span>
+                </label>
+              </div>
+            )}
+            {settings.reminders?.enabled && reminderStatus === "no-fullscreen" && (
+              <div style={{marginTop:10}}>
+                <p style={{color:"var(--color-text-danger, #dc2626)",fontSize:12,marginBottom:6,lineHeight:1.5}}>
+                  ⚠️ L'alarme ne peut pas réveiller l'écran : Android bloque les notifications plein écran pour cette app.
+                </p>
+                <button onClick={openFullScreen} style={{fontSize:12}}>
+                  Autoriser le plein écran
+                </button>
               </div>
             )}
             {settings.reminders?.enabled && reminderStatus === "no-permission" && (
