@@ -545,7 +545,10 @@ Structure (titres en MAJUSCULES) :
 Sois prudent : signale si les données sont insuffisantes (peu de mois/prises) et rappelle que seule une consultation médicale permet de décider.`;
 }
 
-function exportPDF(year, month, data, settings, aiResult) {
+// Construit le document HTML imprimable (aperçu PDF). Renvoie la chaîne HTML ;
+// l'affichage diffère selon la plateforme (onglet sur PC, vue intégrée sur mobile
+// pour que le bouton retour Android puisse en sortir).
+function buildPdfHtml(year, month, data, settings, aiResult) {
   const meds = settings.meds.map(medOf);
   const days = daysInMonth(year, month);
   const adh = computeAdherence(data, settings.meds, year, month);
@@ -585,7 +588,7 @@ function exportPDF(year, month, data, settings, aiResult) {
   const aiHtml = aiResult ? `<div style="margin-top:28px;page-break-before:always"><h3 style="font-size:18px;color:#185FA5;margin-bottom:12px">Analyse (IA locale)</h3><div style="font-size:14px;line-height:1.7;white-space:pre-wrap">${aiResult}</div></div>` : "";
 
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>SuiviMed ${MONTHS[month]} ${year}</title><style>@page{size:A4 landscape;margin:10mm;}@media print{.np{display:none!important;}}</style></head><body style="font-family:Arial,sans-serif;padding:20px;color:#222"><div style="display:flex;justify-content:space-between;margin-bottom:18px"><div><h1 style="font-size:24px;margin:0 0 4px">SuiviMed</h1><p style="font-size:15px;color:#555;margin:0">${MONTHS[month]} ${year}</p></div><button class="np" onclick="window.print()" style="padding:8px 16px;font-size:14px;cursor:pointer">Imprimer / PDF</button></div><div style="overflow-x:auto"><table style="border-collapse:collapse"><thead><tr style="background:#f0f4fa"><th style="padding:6px 10px;text-align:left;font-size:13px;border:0.5px solid #ccc;min-width:150px">Médicament / moment</th>${Array.from({length:days},(_,i)=>`<th style="text-align:center;font-size:12px;padding:4px 2px;border:0.5px solid #ccc;min-width:24px">${i+1}</th>`).join("")}</tr></thead><tbody>${tableRows}</tbody></table></div><p style="font-size:11px;color:#777;margin-top:6px">✓ = pris · ○ = prévu non pris (oubli)</p>${synHtml}${aiHtml}</body></html>`;
-  const w = window.open("", "_blank"); w.document.write(html); w.document.close();
+  return html;
 }
 
 // ══════════════════════════════════════════
@@ -601,6 +604,15 @@ export default function App() {
   const [careView, setCareView] = useState("meds");
   // Observance : portée d'analyse "month" (mois courant) ou "year" (vue annuelle).
   const [obsScope, setObsScope] = useState("month");
+  // Aperçu PDF intégré (mobile) : HTML du document affiché en plein écran.
+  const [pdfHtml, setPdfHtml] = useState("");
+  // Sur mobile, l'aperçu PDF s'affiche dans une vue intégrée (view="pdf") d'où le
+  // bouton retour Android peut sortir ; sur PC/web, on ouvre un nouvel onglet.
+  const handleExportPDF = () => {
+    const html = buildPdfHtml(year, month, data, settings, aiResult);
+    if (isCapacitor) { setPdfHtml(html); setView("pdf"); }
+    else { const w = window.open("", "_blank"); if (w) { w.document.write(html); w.document.close(); } }
+  };
   const [confirmDel, setConfirmDel] = useState(null);
   const [toast, setToast] = useState("");
   const [aiResult,  setAiResult]  = useState("");
@@ -741,8 +753,9 @@ export default function App() {
   const backHandlerRef = useRef(() => {});
   const lastBackRef = useRef(0);
   backHandlerRef.current = () => {
-    if (confirmDel !== null)  { setConfirmDel(null); return; }
-    if (view !== "suivi")     { setView("suivi");   return; }
+    if (confirmDel !== null)  { setConfirmDel(null);    return; }
+    if (view === "pdf")       { setView("soignant");   return; } // sortir de l'aperçu PDF
+    if (view !== "suivi")     { setView("suivi");       return; }
     const now = Date.now();
     if (now - lastBackRef.current < 2000) {
       CapacitorApp.exitApp();
@@ -1139,11 +1152,22 @@ export default function App() {
     {id:"meds",       icon:"ti-pill",      label:"Médicaments"},
     {id:"calendar",   icon:"ti-table",     label:"Calendrier"},
     {id:"observance", icon:"ti-chart-bar", label:"Observance"},
-    ...(isElectron ? [{id:"ai", icon:"ti-brain", label:"Analyse IA"}] : []),
+    {id:"ai",         icon:"ti-brain",     label:"Analyse IA"},
   ];
 
   return (
     <div style={{fontSize:13,color:"var(--color-text-primary)"}}>
+
+      {/* Aperçu PDF (mobile) : plein écran, fermeture via « Retour » ou bouton retour Android */}
+      {view==="pdf"&&(
+        <div style={{position:"fixed",inset:0,background:"#fff",zIndex:1000,display:"flex",flexDirection:"column"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,padding:"max(10px,env(safe-area-inset-top)) 14px 10px",borderBottom:"1px solid #e3e7ec",background:"#fff",color:"#1a1a1a"}}>
+            <button onClick={()=>setView("soignant")} style={{display:"flex",alignItems:"center",gap:5,fontSize:13}}><i className="ti ti-arrow-left" aria-hidden="true"></i> Retour</button>
+            <span style={{flex:1,fontWeight:600}}>Aperçu PDF</span>
+          </div>
+          <iframe srcDoc={pdfHtml} title="Aperçu PDF" style={{flex:1,border:"none",width:"100%"}} />
+        </div>
+      )}
 
       {/* Header */}
       <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:18,flexWrap:"wrap"}}>
@@ -1235,7 +1259,7 @@ export default function App() {
                 </label>
             }
             <button onClick={handleExportJSON} style={{display:"flex",alignItems:"center",gap:5,fontSize:12}}><i className="ti ti-download" aria-hidden="true"></i> Exporter</button>
-            <button onClick={()=>exportPDF(year,month,data,settings,aiResult)} style={{display:"flex",alignItems:"center",gap:5,fontSize:12}}><i className="ti ti-file-type-pdf" aria-hidden="true"></i> PDF</button>
+            <button onClick={handleExportPDF} style={{display:"flex",alignItems:"center",gap:5,fontSize:12}}><i className="ti ti-file-type-pdf" aria-hidden="true"></i> PDF</button>
           </div>
           <div style={{display:"flex",overflowX:"auto"}}>
             <div style={{display:"inline-flex",background:"var(--color-background-secondary)",borderRadius:12,padding:4,gap:2}}>
@@ -1345,6 +1369,9 @@ export default function App() {
       {/* Soignant · Observance */}
       {view==="soignant"&&careView==="observance"&&(
         <div>
+          <p style={{fontSize:11.5,color:"var(--color-text-tertiary)",marginBottom:12,lineHeight:1.55}}>
+            <i className="ti ti-info-circle" aria-hidden="true"></i> L'observance mesure le respect du traitement : la part des doses prévues par l'ordonnance qui ont réellement été prises. Elle aide à repérer les oublis et à en parler avec le soignant.
+          </p>
           {/* Portée d'analyse + navigateur */}
           <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:18,flexWrap:"wrap"}}>
             <div style={{display:"inline-flex",background:"var(--color-background-secondary)",borderRadius:999,padding:3,gap:2}}>
@@ -1489,7 +1516,28 @@ export default function App() {
       {/* Soignant · Analyse IA */}
       {view==="soignant"&&careView==="ai"&&(
         <div>
-          {isElectron && !ollamaReady && (
+          {!isElectron && (
+            <div style={{background:"var(--color-background-secondary)",border:"1px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"1.1rem 1.25rem"}}>
+              <div style={{display:"flex",alignItems:"center",gap:11,marginBottom:10}}>
+                <span style={{width:40,height:40,borderRadius:11,background:"var(--brand-soft)",display:"flex",alignItems:"center",justifyContent:"center",flex:"0 0 auto"}}>
+                  <i className="ti ti-brain" style={{fontSize:21,color:"var(--brand-strong)"}} aria-hidden="true"></i>
+                </span>
+                <p style={{fontWeight:600,fontSize:15}}>Analyse IA — sur la version ordinateur</p>
+              </div>
+              <p style={{color:"var(--color-text-secondary)",fontSize:12.5,lineHeight:1.7,marginBottom:10}}>
+                La version <strong>Desktop (ordinateur)</strong> de SuiviMed propose une analyse par intelligence artificielle : elle compare les prises réelles à l'ordonnance et résume l'observance, les oublis, la cohérence de la posologie et des pistes à discuter avec le médecin.
+              </p>
+              <p style={{display:"flex",alignItems:"flex-start",gap:8,color:"var(--color-text-secondary)",fontSize:12,lineHeight:1.6,marginBottom:10}}>
+                <i className="ti ti-lock" style={{marginTop:1,color:"var(--color-text-success)"}} aria-hidden="true"></i>
+                <span>L'analyse s'exécute <strong>localement sur l'ordinateur</strong> : aucune donnée ne quitte la machine, rien n'est envoyé sur Internet.</span>
+              </p>
+              <p style={{color:"var(--color-text-tertiary)",fontSize:11.5,lineHeight:1.6}}>
+                Pour la retrouver sur l'ordinateur : connecte le même compte Google (synchronisation) ou utilise « Exporter ».
+              </p>
+            </div>
+          )}
+          {isElectron && (<>
+          {!ollamaReady && (
             <div style={{background:"var(--color-background-secondary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"1rem 1.25rem",marginBottom:16}}>
               <p style={{fontWeight:500,marginBottom:4}}>Moteur IA local non installé</p>
               <p style={{color:"var(--color-text-secondary)",fontSize:12,marginBottom:12,lineHeight:1.6}}>
@@ -1516,9 +1564,9 @@ export default function App() {
             </div>
           )}
 
-          {(!isElectron || ollamaReady) && (
+          {ollamaReady && (
             <div style={{background:"var(--color-background-secondary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"var(--border-radius-lg)",padding:"1rem 1.25rem",marginBottom:16}}>
-              <p style={{fontWeight:500,marginBottom:4}}>Analyse observance {isElectron ? "(IA locale)" : "(Claude)"}</p>
+              <p style={{fontWeight:500,marginBottom:4}}>Analyse observance (IA locale)</p>
               <p style={{color:"var(--color-text-secondary)",fontSize:12,marginBottom:12,lineHeight:1.6}}>
                 Compare vos prises réelles à la posologie prescrite : observance, oublis, surconsommation, cohérence de la posologie, interactions, et pistes à discuter avec votre médecin. Destiné à être relu par un professionnel de santé.
               </p>
@@ -1551,12 +1599,13 @@ export default function App() {
                 <span style={{fontWeight:500,fontSize:14}}>Résultat</span>
                 <div style={{display:"flex",gap:8}}>
                   <button onClick={()=>{navigator.clipboard?.writeText(aiResult);showToast("Copié");}} style={{display:"flex",alignItems:"center",gap:6,fontSize:12}}><i className="ti ti-copy" aria-hidden="true"></i> Copier</button>
-                  <button onClick={()=>exportPDF(year,month,data,settings,aiResult)} style={{display:"flex",alignItems:"center",gap:6,fontSize:12}}><i className="ti ti-file-type-pdf" aria-hidden="true"></i> PDF</button>
+                  <button onClick={handleExportPDF} style={{display:"flex",alignItems:"center",gap:6,fontSize:12}}><i className="ti ti-file-type-pdf" aria-hidden="true"></i> PDF</button>
                 </div>
               </div>
               <div style={{fontSize:13,lineHeight:1.8,whiteSpace:"pre-wrap",color:"var(--color-text-primary)"}}>{aiResult}</div>
             </div>
           )}
+          </>)}
         </div>
       )}
 
