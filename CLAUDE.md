@@ -66,6 +66,24 @@ Android : `npx cap add android` (1re fois) puis `npx cap sync android`.
   (+ `GOOGLE_PLAY_SERVICE_ACCOUNT` pour play-store.yml).
   Valeurs récapitulées dans `SIGNING-SECRETS.txt` (local, non commité).
 
+## Alarme de prise (Android natif) — autorisation « plein écran »
+L'alarme (mode `reminders.mode === "alarm"`) sonne et **prend l'écran par-dessus
+les autres apps** via un *full-screen intent* (`AlarmReceiver` → `AlarmActivity`).
+Cela nécessite la permission `USE_FULL_SCREEN_INTENT` :
+- **Android ≤ 13** : permission *normale*, **accordée automatiquement à l'installation**.
+- **Android 14+ (API 34)** : refusée par défaut pour une app « lambda ». Deux cas :
+  - **Install par APK (Releases GitHub)** : doit être activée **manuellement**. L'app
+    ouvre directement le bon écran (`Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT`,
+    repli sur « Infos de l'app ») — auto à l'activation des rappels + bouton dans Réglages.
+  - **Install depuis le Play Store** : peut être **auto-accordée** SI on remplit la
+    **déclaration « notifications plein écran » dans la Play Console** (justifier l'usage
+    alarme). ⚠️ Étape MANUELLE côté Console — aucun réglage du manifeste ne la déclenche.
+    Une fois faite + approuvée, `canUseFullScreenIntent()` renvoie `true` → aucun bouton.
+- Le son est joué par `AlarmActivity` (MediaPlayer, flux ALARME). ⚠️ Le `.wav` DOIT
+  rester non compressé (`aaptOptions { noCompress 'wav' }`) sinon `openRawResourceFd`
+  échoue en silence. Si la prise d'écran échoue malgré la permission (OEM agressif),
+  la piste robuste = service au premier plan jouant le son indépendamment de l'activité.
+
 ## Notes pour Claude Code
 - Composant principal : `src/app.jsx`. Import sensible à la casse : `./app.jsx`.
 - L'onglet « Analyse IA » n'apparaît que sur desktop (Electron), comme MigraineLog.

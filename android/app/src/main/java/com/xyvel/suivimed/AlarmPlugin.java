@@ -67,19 +67,28 @@ public class AlarmPlugin extends Plugin {
         call.resolve(ret);
     }
 
+    // Mène DIRECTEMENT à l'écran « Notifications plein écran » de l'app (Android 14+).
+    // Repli : page « Infos de l'application » si cet écran exact n'est pas disponible.
     @PluginMethod
     public void openFullScreenIntentSettings(PluginCall call) {
-        try {
-            if (Build.VERSION.SDK_INT >= 34) {
+        Context ctx = getContext();
+        if (Build.VERSION.SDK_INT >= 34) {
+            try {
                 Intent i = new Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT);
-                i.setData(Uri.parse("package:" + getContext().getPackageName()));
+                i.setData(Uri.parse("package:" + ctx.getPackageName()));
                 i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                getContext().startActivity(i);
-            }
-            call.resolve();
-        } catch (Exception e) {
-            call.reject("Impossible d'ouvrir les réglages", e);
+                ctx.startActivity(i);
+                call.resolve();
+                return;
+            } catch (Exception ignored) { /* écran indisponible → repli ci-dessous */ }
         }
+        try {
+            Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            i.setData(Uri.parse("package:" + ctx.getPackageName()));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            ctx.startActivity(i);
+        } catch (Exception ignored) {}
+        call.resolve();
     }
 
     // L'app est-elle exemptée de l'optimisation batterie (Doze) ? Sans ça, le

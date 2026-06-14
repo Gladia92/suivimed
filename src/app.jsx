@@ -1793,11 +1793,14 @@ export default function App() {
             {settings.reminders?.enabled && reminderStatus === "no-fullscreen" && (
               <div style={{marginTop:10}}>
                 <p style={{color:"var(--color-text-danger, #dc2626)",fontSize:12,marginBottom:6,lineHeight:1.5}}>
-                  ⚠️ Pour que l'alarme <strong>réveille l'écran et passe par-dessus les autres applications</strong>, Android demande l'autorisation « notifications plein écran ». Elle n'est pas accordée.
+                  ⚠️ Pour que l'alarme <strong>réveille l'écran et passe par-dessus les autres applications</strong>, Android 14+ exige l'autorisation « notifications plein écran » — non accordée ici. Appuie pour aller directement au réglage et l'activer.
                 </p>
                 <button onClick={openFullScreen} style={{fontSize:12}}>
-                  Autoriser le plein écran
+                  <i className="ti ti-settings" aria-hidden="true"></i> Ouvrir le réglage « plein écran »
                 </button>
+                <p style={{color:"var(--color-text-tertiary)",fontSize:11,marginTop:6,lineHeight:1.5}}>
+                  Sur la version installée depuis le Play Store, cette autorisation est accordée automatiquement.
+                </p>
               </div>
             )}
             {settings.reminders?.enabled && (settings.reminders?.mode ?? "alarm") === "alarm" && !batteryOk && (
