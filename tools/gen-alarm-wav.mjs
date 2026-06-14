@@ -19,15 +19,16 @@ import { fileURLToPath } from "node:url";
 
 const SR          = 22050;   // Hz
 const DURATION_S  = 30;
-const CYCLE_S     = 6.0;     // le carillon se répète toutes les 6 s
+const CYCLE_S     = 8.0;     // carillon (~2 s) + ~6 s de silence avant le suivant
 const PEAK        = 0.82;    // niveau crête final après normalisation
 
-// Carillon montant sol–do–mi–sol (G5, C6, E6, G6) : [fréquence Hz, départ s].
+// Carillon montant sol–do–mi–sol une octave plus bas (G4, C5, E5, G5), plus doux.
+// [fréquence Hz, départ s, facteur de durée] — la 4e note est plus courte.
 const NOTES = [
-  [783.99, 0.00],
-  [1046.50, 0.28],
-  [1318.51, 0.56],
-  [1567.98, 0.84],
+  [391.995, 0.00, 1.0],
+  [523.251, 0.26, 1.0],
+  [659.255, 0.52, 1.0],
+  [783.991, 0.78, 0.4],   // dernier « ta » nettement plus court
 ];
 
 const REVERB_MIX = 0.34;     // part de réverb (0 = sec, ~0.4 = grand hall)
@@ -43,14 +44,15 @@ const N = Math.floor(SR * DURATION_S);
 // ── 1) Signal « sec » : carillon vibraphone, répété chaque cycle.
 // Une note = somme de partiels (dont un léger partiel inharmonique « métallique »),
 // chacun avec sa propre décroissance ; attaque douce ; trémolo d'amplitude.
-function note(f, dt) {
+// dm = facteur de durée de la note (1 = normale, <1 = plus courte).
+function note(f, dt, dm) {
   if (dt < 0) return 0;
   const atk  = Math.min(1, dt / 0.008);
   const trem = 1 + TREMOLO_DEPTH * Math.sin(TWO_PI * TREMOLO_HZ * dt);
-  const p1 = 1.00 * Math.sin(TWO_PI * f * dt)       * Math.exp(-dt / 0.95);
-  const p2 = 0.55 * Math.sin(TWO_PI * 2 * f * dt)   * Math.exp(-dt / 0.55);
-  const p3 = 0.28 * Math.sin(TWO_PI * 3 * f * dt)   * Math.exp(-dt / 0.38);
-  const p4 = 0.14 * Math.sin(TWO_PI * 4.2 * f * dt) * Math.exp(-dt / 0.26); // inharmonique → métallique
+  const p1 = 1.00 * Math.sin(TWO_PI * f * dt)       * Math.exp(-dt / (0.95 * dm));
+  const p2 = 0.45 * Math.sin(TWO_PI * 2 * f * dt)   * Math.exp(-dt / (0.55 * dm));
+  const p3 = 0.20 * Math.sin(TWO_PI * 3 * f * dt)   * Math.exp(-dt / (0.38 * dm));
+  const p4 = 0.07 * Math.sin(TWO_PI * 4.2 * f * dt) * Math.exp(-dt / (0.26 * dm)); // léger métallique
   return atk * trem * (p1 + p2 + p3 + p4);
 }
 
@@ -58,7 +60,7 @@ const dry = new Float64Array(N);
 for (let n = 0; n < N; n++) {
   const ct = (n / SR) % CYCLE_S;
   let s = 0;
-  for (const [f, start] of NOTES) s += note(f, ct - start);
+  for (const [f, start, dm] of NOTES) s += note(f, ct - start, dm);
   dry[n] = s;
 }
 
