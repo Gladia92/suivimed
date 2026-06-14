@@ -6,6 +6,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.res.AssetFileDescriptor;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.graphics.drawable.GradientDrawable;
 import android.media.AudioAttributes;
 import android.media.MediaPlayer;
@@ -18,6 +19,7 @@ import android.os.Vibrator;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -78,8 +80,22 @@ public class AlarmActivity extends Activity {
             GradientDrawable.Orientation.TOP_BOTTOM,
             new int[]{ Color.parseColor("#0E7490"), Color.parseColor("#06222B") });
         root.setBackground(bg);
-        int pad = dp(28);
-        root.setPadding(pad, dp(56), pad, dp(40));
+        final int sidePad = dp(28);
+        // Padding par défaut, puis ajusté aux zones sûres (barre d'état / barre de
+        // navigation) pour que les contrôles ne soient pas collés au bord bas.
+        root.setPadding(sidePad, dp(56), sidePad, dp(72));
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+            int topI, botI;
+            if (Build.VERSION.SDK_INT >= 30) {
+                Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
+                topI = bars.top; botI = bars.bottom;
+            } else {
+                topI = insets.getSystemWindowInsetTop();
+                botI = insets.getSystemWindowInsetBottom();
+            }
+            v.setPadding(sidePad, dp(48) + topI, sidePad, dp(56) + botI);
+            return insets;
+        });
 
         // Heure courante, en grand
         TextView clock = new TextView(this);
