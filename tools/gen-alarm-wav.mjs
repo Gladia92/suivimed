@@ -18,21 +18,21 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SR          = 22050;   // Hz
-const DURATION_S  = 30;
-const CYCLE_S     = 8.0;     // carillon (~2 s) + ~6 s de silence avant le suivant
+const DURATION_S  = 11.0;    // 2 cycles (le lecteur d'alarme boucle le fichier)
+const CYCLE_S     = 5.5;     // carillon court (~1 s) + ~4,5 s de silence
 const PEAK        = 0.82;    // niveau crête final après normalisation
 
-// Carillon montant sol–do–mi–sol une octave plus bas (G4, C5, E5, G5), plus doux.
-// [fréquence Hz, départ s, facteur de durée] — la 4e note est plus courte.
+// Carillon court, registre médian encore un ton plus bas (do5, mi♭5, fa5, do5).
+// [fréquence Hz, départ s, facteur de durée] — la 4e note est un « tac » très sec.
 const NOTES = [
-  [391.995, 0.00, 1.0],
-  [523.251, 0.26, 1.0],
-  [659.255, 0.52, 1.0],
-  [783.991, 0.78, 0.4],   // dernier « ta » nettement plus court
+  [523.25, 0.00, 0.50],
+  [622.25, 0.28, 0.35],   // mi♭5 : c'est elle qui traînait (analyse) → durée réduite
+  [698.46, 0.56, 0.28],
+  [523.25, 0.84, 0.45],   // « tac » final
 ];
 
-const REVERB_MIX = 0.34;     // part de réverb (0 = sec, ~0.4 = grand hall)
-const REVERB_FB  = 0.80;     // longueur de la queue de réverb
+const REVERB_MIX = 0.15;     // part de réverb (0 = sec, ~0.4 = grand hall)
+const REVERB_FB  = 0.50;     // longueur de la queue de réverb
 const TREMOLO_DEPTH = 0.12;  // profondeur du trémolo (vibraphone)
 const TREMOLO_HZ    = 5.2;
 
@@ -49,10 +49,10 @@ function note(f, dt, dm) {
   if (dt < 0) return 0;
   const atk  = Math.min(1, dt / 0.008);
   const trem = 1 + TREMOLO_DEPTH * Math.sin(TWO_PI * TREMOLO_HZ * dt);
-  const p1 = 1.00 * Math.sin(TWO_PI * f * dt)       * Math.exp(-dt / (0.95 * dm));
-  const p2 = 0.45 * Math.sin(TWO_PI * 2 * f * dt)   * Math.exp(-dt / (0.55 * dm));
-  const p3 = 0.20 * Math.sin(TWO_PI * 3 * f * dt)   * Math.exp(-dt / (0.38 * dm));
-  const p4 = 0.07 * Math.sin(TWO_PI * 4.2 * f * dt) * Math.exp(-dt / (0.26 * dm)); // léger métallique
+  const p1 = 1.00 * Math.sin(TWO_PI * f * dt)       * Math.exp(-dt / (0.40 * dm));
+  const p2 = 0.40 * Math.sin(TWO_PI * 2 * f * dt)   * Math.exp(-dt / (0.26 * dm));
+  const p3 = 0.18 * Math.sin(TWO_PI * 3 * f * dt)   * Math.exp(-dt / (0.17 * dm));
+  const p4 = 0.06 * Math.sin(TWO_PI * 4.2 * f * dt) * Math.exp(-dt / (0.12 * dm)); // léger métallique
   return atk * trem * (p1 + p2 + p3 + p4);
 }
 
