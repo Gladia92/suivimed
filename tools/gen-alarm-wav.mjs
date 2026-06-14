@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 
 const SR          = 22050;   // Hz
 const DURATION_S  = 30;
-const CYCLE_S     = 3.0;     // le carillon se répète toutes les 3 s
+const CYCLE_S     = 6.0;     // le carillon se répète toutes les 6 s
 const PEAK        = 0.82;    // niveau crête final après normalisation
 
 // Carillon montant sol–do–mi–sol (G5, C6, E6, G6) : [fréquence Hz, départ s].
