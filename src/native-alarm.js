@@ -42,6 +42,19 @@ export async function requestBatteryUnrestricted() {
   try { await Alarm.requestIgnoreBatteryOptimizations(); } catch {}
 }
 
+// « Afficher par-dessus les autres applications » (superposition) : permet à
+// l'écran d'alarme de passer au premier plan même quand on est dans une autre app.
+export async function canDrawOverlays() {
+  if (!isNative()) return true;
+  try { const r = await Alarm.canDrawOverlays(); return r?.granted !== false; }
+  catch { return true; }
+}
+
+export async function requestOverlay() {
+  if (!isNative()) return;
+  try { await Alarm.requestOverlayPermission(); } catch {}
+}
+
 // Récupère (et vide) les prises notées via le bouton « J'ai pris » de l'écran
 // d'alarme. Renvoie [{ moment:number, date:"YYYY-MM-DD" }, …].
 export async function consumePendingTaken() {

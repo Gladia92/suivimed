@@ -91,6 +91,37 @@ public class AlarmPlugin extends Plugin {
         call.resolve();
     }
 
+    // « Afficher par-dessus les autres applications » (SYSTEM_ALERT_WINDOW) : donne
+    // le droit de lancer l'écran d'alarme PAR-DESSUS l'app de devant (exemption BAL).
+    @PluginMethod
+    public void canDrawOverlays(PluginCall call) {
+        boolean granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
+            || Settings.canDrawOverlays(getContext());
+        JSObject ret = new JSObject();
+        ret.put("granted", granted);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void requestOverlayPermission(PluginCall call) {
+        Context ctx = getContext();
+        try {
+            Intent i = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:" + ctx.getPackageName()));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            ctx.startActivity(i);
+            call.resolve();
+            return;
+        } catch (Exception ignored) {}
+        try {
+            Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.parse("package:" + ctx.getPackageName()));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            ctx.startActivity(i);
+        } catch (Exception ignored) {}
+        call.resolve();
+    }
+
     // L'app est-elle exemptée de l'optimisation batterie (Doze) ? Sans ça, le
     // système peut différer les alarmes quand le téléphone reste posé longtemps.
     @PluginMethod

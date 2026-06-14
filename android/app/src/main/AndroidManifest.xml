@@ -52,8 +52,14 @@
             android:taskAffinity=".alarm"
             android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
 
-        <!-- Reçoit l'alarme programmée et déclenche la notification plein écran -->
+        <!-- Reçoit l'alarme programmée et démarre le service au premier plan -->
         <receiver android:name=".AlarmReceiver" android:exported="false" />
+
+        <!-- Service au premier plan : joue le son indépendamment de l'écran -->
+        <service
+            android:name=".AlarmService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
 
         <!-- Replanifie les alarmes après un redémarrage -->
         <receiver android:name=".BootReceiver" android:exported="true">
@@ -92,4 +98,11 @@
 
     <!-- Fiabilité : exemption de l'optimisation batterie (Doze) pour ne pas différer l'alarme -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- Service au premier plan qui joue le son de l'alarme -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+
+    <!-- Afficher l'écran d'alarme par-dessus les autres applications -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 </manifest>

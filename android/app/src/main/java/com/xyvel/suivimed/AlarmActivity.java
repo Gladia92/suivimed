@@ -4,18 +4,13 @@ import android.app.Activity;
 import android.app.KeyguardManager;
 import android.content.Context;
 import android.content.Intent;
-import android.content.res.AssetFileDescriptor;
 import android.graphics.Color;
 import android.graphics.Insets;
 import android.graphics.drawable.GradientDrawable;
-import android.media.AudioAttributes;
-import android.media.MediaPlayer;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.VibrationEffect;
-import android.os.Vibrator;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -31,17 +26,15 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 
-// Écran d'alarme plein écran (lancé par le full-screen intent d'AlarmReceiver) :
-// réveille/allume l'écran même verrouillé, passe par-dessus les autres apps, joue
-// le son (flux ALARME) et vibre. Deux actions DISTINCTES :
+// Écran d'alarme plein écran : réveille/allume l'écran même verrouillé, passe
+// par-dessus les autres apps. Le SON est joué par AlarmService (indépendant de
+// cet écran) ; ici on ne gère que l'UI et deux actions distinctes :
 //   • Glisser le curseur  → ARRÊTE l'alarme seulement (ne coche PAS la prise).
-//   • Bouton « J'ai pris » → coche réellement la prise (déposée pour le JS) ET arrête.
+//   • Bouton « J'ai pris » → coche réellement la prise ET arrête.
 public class AlarmActivity extends Activity {
 
-    private static final long MAX_MS = 30_000; // arrêt auto après 30 s
+    private static final long MAX_MS = 30_000; // fermeture auto de l'écran après 30 s
 
-    private MediaPlayer player;
-    private Vibrator vibrator;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private int notifId = 1;
 
@@ -68,7 +61,6 @@ public class AlarmActivity extends Activity {
         title = title.replace("💊", "").trim();
 
         setContentView(buildUi(title));
-        startAlarm();
         handler.postDelayed(this::stopAndFinish, MAX_MS);
     }
 
@@ -81,8 +73,6 @@ public class AlarmActivity extends Activity {
             new int[]{ Color.parseColor("#0E7490"), Color.parseColor("#06222B") });
         root.setBackground(bg);
         final int sidePad = dp(28);
-        // Padding par défaut, puis ajusté aux zones sûres (barre d'état / barre de
-        // navigation) pour que les contrôles ne soient pas collés au bord bas.
         root.setPadding(sidePad, dp(56), sidePad, dp(72));
         root.setOnApplyWindowInsetsListener((v, insets) -> {
             int topI, botI;
@@ -97,18 +87,17 @@ public class AlarmActivity extends Activity {
             return insets;
         });
 
-        // Heure courante, en grand
         TextView clock = new TextView(this);
         clock.setText(new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date()));
         clock.setTextColor(Color.WHITE);
         clock.setTextSize(64);
         clock.setGravity(Gravity.CENTER);
+        addTop(root, clock, 0);
 
         TextView emoji = new TextView(this);
         emoji.setText("💊");
         emoji.setTextSize(52);
         emoji.setGravity(Gravity.CENTER);
-        addTop(root, clock, 0);
         addTop(root, emoji, dp(18));
 
         TextView tv = new TextView(this);
@@ -125,30 +114,25 @@ public class AlarmActivity extends Activity {
         sub.setGravity(Gravity.CENTER);
         addTop(root, sub, dp(10));
 
-        // Espace flexible
         View spacer = new View(this);
-        LinearLayout.LayoutParams spLp = new LinearLayout.LayoutParams(1, 0, 1f);
-        spacer.setLayoutParams(spLp);
+        spacer.setLayoutParams(new LinearLayout.LayoutParams(1, 0, 1f));
         root.addView(spacer);
 
-        // ── Curseur « glisser pour arrêter » (n'incrémente PAS la prise) ──────────
+        // Curseur « glisser pour arrêter » (n'incrémente PAS la prise)
         FrameLayout track = new FrameLayout(this);
         GradientDrawable trackBg = new GradientDrawable();
-        trackBg.setColor(Color.parseColor("#2EFFFFFF")); // blanc ~18%
+        trackBg.setColor(Color.parseColor("#2EFFFFFF"));
         trackBg.setCornerRadius(dp(34));
         track.setBackground(trackBg);
-        LinearLayout.LayoutParams trackLp = new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, dp(68));
-        track.setLayoutParams(trackLp);
+        track.setLayoutParams(new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(68)));
 
         final TextView instr = new TextView(this);
         instr.setText("Glissez pour arrêter  →");
         instr.setTextColor(Color.WHITE);
         instr.setTextSize(16);
         instr.setGravity(Gravity.CENTER);
-        FrameLayout.LayoutParams instrLp = new FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT);
-        instr.setLayoutParams(instrLp);
+        instr.setLayoutParams(new FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         track.addView(instr);
 
         final TextView thumb = new TextView(this);
@@ -195,7 +179,7 @@ public class AlarmActivity extends Activity {
         });
         addTop(root, track, dp(8));
 
-        // ── Bouton secondaire, plus petit : « J'ai pris » (coche la prise) ────────
+        // Bouton secondaire, plus petit : « J'ai pris » (coche la prise)
         TextView taken = new TextView(this);
         taken.setText("✓  J'ai pris mon traitement");
         taken.setTextColor(Color.WHITE);
@@ -238,46 +222,15 @@ public class AlarmActivity extends Activity {
         stopAndFinish();
     }
 
-    private void startAlarm() {
-        try {
-            player = new MediaPlayer();
-            player.setAudioAttributes(new AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ALARM)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .build());
-            AssetFileDescriptor afd = getResources().openRawResourceFd(R.raw.alarme_prise);
-            player.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
-            afd.close();
-            player.setLooping(true);
-            player.prepare();
-            player.start();
-        } catch (Exception ignored) {}
-
-        try {
-            vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
-            if (vibrator != null && vibrator.hasVibrator()) {
-                long[] pattern = { 0, 700, 1500 };
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    vibrator.vibrate(VibrationEffect.createWaveform(pattern, 0));
-                } else {
-                    vibrator.vibrate(pattern, 0);
-                }
-            }
-        } catch (Exception ignored) {}
-    }
-
+    // Arrête le son (via AlarmService) et ferme l'écran.
     private void stopAndFinish() {
         handler.removeCallbacksAndMessages(null);
-        try { if (player != null) { player.stop(); player.release(); player = null; } } catch (Exception ignored) {}
-        try { if (vibrator != null) vibrator.cancel(); } catch (Exception ignored) {}
+        try {
+            Intent stop = new Intent(this, AlarmService.class).setAction(AlarmService.ACTION_STOP);
+            startService(stop);
+        } catch (Exception ignored) {}
         try { NotificationManagerCompat.from(this).cancel(notifId); } catch (Exception ignored) {}
         finish();
-    }
-
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        stopAndFinish();
     }
 
     private int dp(int v) {

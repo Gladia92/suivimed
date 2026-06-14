@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { App as CapacitorApp } from "@capacitor/app";
 import * as gdriveMobile from "./gdrive-mobile.js";
-import { setAlarms, cancelAlarms, canUseFullScreen, openFullScreenSettings, isBatteryUnrestricted, requestBatteryUnrestricted, openBackgroundSettings, consumePendingTaken } from "./native-alarm.js";
+import { setAlarms, cancelAlarms, canUseFullScreen, openFullScreenSettings, isBatteryUnrestricted, requestBatteryUnrestricted, openBackgroundSettings, consumePendingTaken, canDrawOverlays, requestOverlay } from "./native-alarm.js";
 
 // ── Electron bridge (falls back to localStorage in browser dev)
 const isElectron = !!window.electronAPI;
@@ -664,6 +664,8 @@ export default function App() {
   const [reminderStatus, setReminderStatus] = useState("");
   // Fiabilité de l'alarme : l'app est-elle exemptée de l'optimisation batterie (Doze) ?
   const [batteryOk, setBatteryOk] = useState(true);
+  // L'alarme peut-elle s'afficher par-dessus les autres apps (superposition) ?
+  const [overlayOk, setOverlayOk] = useState(true);
 
   // Thème clair/sombre/auto : applique le préréglage et, en « auto », suit en direct
   // le réglage clair/sombre de l'appareil.
@@ -681,8 +683,10 @@ export default function App() {
     scheduleReminders(s).then(st => setReminderStatus(st || "")).catch(() => {});
     // En mode alarme, vérifie l'exemption batterie (sinon l'alarme peut être différée).
     const alarmMode = s?.reminders?.enabled && (s.reminders.mode ?? "alarm") === "alarm";
-    if (alarmMode) isBatteryUnrestricted().then(setBatteryOk).catch(() => {});
-    else setBatteryOk(true);
+    if (alarmMode) {
+      isBatteryUnrestricted().then(setBatteryOk).catch(() => {});
+      canDrawOverlays().then(setOverlayOk).catch(() => {});
+    } else { setBatteryOk(true); setOverlayOk(true); }
   }, []);
   // Applique les prises notées via le bouton « J'ai pris » de l'écran d'alarme :
   // coche, pour chaque {moment, date} déposé côté natif, tous les médicaments
@@ -739,6 +743,11 @@ export default function App() {
   // Demande l'exemption d'optimisation batterie (boîte de dialogue système) puis replanifie.
   const askBatteryExemption = useCallback(async () => {
     await requestBatteryUnrestricted();
+    replanReminders(settingsRef.current);
+  }, [replanReminders]);
+  // Demande la permission « superposition » (afficher par-dessus les autres apps).
+  const askOverlay = useCallback(async () => {
+    await requestOverlay();
     replanReminders(settingsRef.current);
   }, [replanReminders]);
   // Ouvre les réglages d'arrière-plan du constructeur (best-effort, repli auto).
@@ -1043,10 +1052,10 @@ export default function App() {
     // déjà accordée. Ne se déclenche que sur ces actions délibérées, pas à chaque
     // changement d'heure.
     if (r.enabled && (r.mode ?? "alarm") === "alarm" && (patch.enabled === true || patch.mode === "alarm")) {
-      // Exemption batterie (déclenchement à l'heure) + autorisation « plein écran »
-      // (l'alarme passe par-dessus les autres apps et réveille l'écran).
+      // Exemption batterie d'emblée (simple dialogue). Les permissions « plein écran »
+      // et « superposition » restent des boutons dans les réglages, pour ne pas
+      // enchaîner trois écrans système d'un coup.
       isBatteryUnrestricted().then(ok => { if (!ok) requestBatteryUnrestricted(); });
-      canUseFullScreen().then(ok => { if (!ok) openFullScreenSettings(); });
     }
   };
   const addMed = () => saveSettings({ ...settings, meds: [...settings.meds, { name: `Médicament ${settings.meds.length+1}`, note: "", regimens: [{ start: todayStr(), end: null, matin: 1, midi: 0, soir: 0 }] }] });
@@ -1801,6 +1810,16 @@ export default function App() {
                 <p style={{color:"var(--color-text-tertiary)",fontSize:11,marginTop:6,lineHeight:1.5}}>
                   Sur la version installée depuis le Play Store, cette autorisation est accordée automatiquement.
                 </p>
+              </div>
+            )}
+            {settings.reminders?.enabled && (settings.reminders?.mode ?? "alarm") === "alarm" && !overlayOk && (
+              <div style={{marginTop:10}}>
+                <p style={{color:"var(--color-text-danger, #dc2626)",fontSize:12,marginBottom:6,lineHeight:1.5}}>
+                  ⚠️ Pour que l'alarme <strong>prenne le dessus quand tu es dans une autre application</strong>, autorise SuiviMed à « s'afficher par-dessus les autres applications ».
+                </p>
+                <button onClick={askOverlay} style={{fontSize:12}}>
+                  <i className="ti ti-settings" aria-hidden="true"></i> Autoriser la superposition
+                </button>
               </div>
             )}
             {settings.reminders?.enabled && (settings.reminders?.mode ?? "alarm") === "alarm" && !batteryOk && (
