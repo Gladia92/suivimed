@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { App as CapacitorApp } from "@capacitor/app";
 import * as gdriveMobile from "./gdrive-mobile.js";
-import { setAlarms, cancelAlarms, canUseFullScreen, openFullScreenSettings, isBatteryUnrestricted, requestBatteryUnrestricted, openBackgroundSettings } from "./native-alarm.js";
+import { setAlarms, cancelAlarms, canUseFullScreen, openFullScreenSettings, isBatteryUnrestricted, requestBatteryUnrestricted, openBackgroundSettings, consumePendingTaken } from "./native-alarm.js";
 
 // ── Electron bridge (falls back to localStorage in browser dev)
 const isElectron = !!window.electronAPI;
@@ -102,6 +102,8 @@ async function scheduleReminders(settings){
             at: at.getTime(),
             title: "💊 Prise du " + mo.label.toLowerCase(),
             body: r === 0 ? "C'est l'heure de ta prise." : "Rappel : prise pas encore notée.",
+            moment: mIdx,
+            date: dateStr(at.getFullYear(), at.getMonth(), at.getDate()),
           });
         }
       });
@@ -682,6 +684,45 @@ export default function App() {
     if (alarmMode) isBatteryUnrestricted().then(setBatteryOk).catch(() => {});
     else setBatteryOk(true);
   }, []);
+  // Applique les prises notées via le bouton « J'ai pris » de l'écran d'alarme :
+  // coche, pour chaque {moment, date} déposé côté natif, tous les médicaments
+  // prescrits à ce moment-là, puis rafraîchit la vue et annule les relances.
+  const applyPendingTaken = useCallback(async () => {
+    if (!isCapacitor) return;
+    let list = [];
+    try { list = await consumePendingTaken(); } catch {}
+    if (!list || !list.length) return;
+    let touched = false;
+    for (const item of list) {
+      const mi = Number(item?.moment);
+      const mo = MOMENTS[mi];
+      if (!mo || !item?.date) continue;
+      const parts = String(item.date).split("-").map(Number);
+      if (parts.length !== 3 || parts.some(isNaN)) continue;
+      const y = parts[0], mIdx = parts[1] - 1, day = parts[2];
+      const ds = dateStr(y, mIdx, day);
+      const medsArr = (settingsRef.current.meds || []).map(medOf);
+      const file = fileKey(y, mIdx);
+      const monthData = (await loadFile(file)) || {};
+      const dk = `d${day}`;
+      const dayObj = { ...(monthData[dk] || {}) };
+      let changed = false;
+      medsArr.forEach((med, i) => {
+        if (prescribedDose(med, ds, mo.key) > 0) {
+          const mk = `med_${i}`;
+          const medObj = { ...(dayObj[mk] || {}) };
+          if (!(Number(medObj[mo.key]) > 0)) { medObj[mo.key] = 1; changed = true; }
+          dayObj[mk] = medObj;
+        }
+      });
+      if (changed) { monthData[dk] = dayObj; await saveFile(file, monthData); touched = true; }
+    }
+    if (touched) {
+      dirtyRef.current = true;
+      setRefreshTick(t => t + 1);
+      replanReminders(settingsRef.current);
+    }
+  }, [replanReminders]);
   // Ouvre l'écran système « Alarmes et rappels » (Android 12+) puis replanifie.
   const openExactAlarmSettings = useCallback(async () => {
     try {
@@ -729,6 +770,7 @@ export default function App() {
       const s = await loadSettings();
       setSettings(s);
       replanReminders(s);
+      await applyPendingTaken(); // prises notées via l'écran d'alarme pendant l'absence
       const d = await loadMonth(year, month);
       setData(d);
       if (isElectron) {
@@ -747,7 +789,7 @@ export default function App() {
   useEffect(() => {
     if (!isCapacitor) return;
     let handle;
-    CapacitorApp.addListener("resume", () => replanReminders(settingsRef.current))
+    CapacitorApp.addListener("resume", () => { applyPendingTaken(); replanReminders(settingsRef.current); })
       .then((h) => { handle = h; })
       .catch(() => {});
     return () => { if (handle) handle.remove(); };
@@ -1001,7 +1043,10 @@ export default function App() {
     // déjà accordée. Ne se déclenche que sur ces actions délibérées, pas à chaque
     // changement d'heure.
     if (r.enabled && (r.mode ?? "alarm") === "alarm" && (patch.enabled === true || patch.mode === "alarm")) {
+      // Exemption batterie (déclenchement à l'heure) + autorisation « plein écran »
+      // (l'alarme passe par-dessus les autres apps et réveille l'écran).
       isBatteryUnrestricted().then(ok => { if (!ok) requestBatteryUnrestricted(); });
+      canUseFullScreen().then(ok => { if (!ok) openFullScreenSettings(); });
     }
   };
   const addMed = () => saveSettings({ ...settings, meds: [...settings.meds, { name: `Médicament ${settings.meds.length+1}`, note: "", regimens: [{ start: todayStr(), end: null, matin: 1, midi: 0, soir: 0 }] }] });
@@ -1748,7 +1793,7 @@ export default function App() {
             {settings.reminders?.enabled && reminderStatus === "no-fullscreen" && (
               <div style={{marginTop:10}}>
                 <p style={{color:"var(--color-text-danger, #dc2626)",fontSize:12,marginBottom:6,lineHeight:1.5}}>
-                  ⚠️ L'alarme ne peut pas réveiller l'écran : Android bloque les notifications plein écran pour cette app.
+                  ⚠️ Pour que l'alarme <strong>réveille l'écran et passe par-dessus les autres applications</strong>, Android demande l'autorisation « notifications plein écran ». Elle n'est pas accordée.
                 </p>
                 <button onClick={openFullScreen} style={{fontSize:12}}>
                   Autoriser le plein écran

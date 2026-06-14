@@ -42,6 +42,17 @@ public class AlarmPlugin extends Plugin {
         call.resolve();
     }
 
+    // Récupère (et vide) les prises notées via le bouton « J'ai pris » de l'écran
+    // d'alarme, pour que le JS coche réellement la prise dans ses données.
+    @PluginMethod
+    public void consumePendingTaken(PluginCall call) {
+        String json = AlarmScheduler.consumePendingTaken(getContext());
+        JSObject ret = new JSObject();
+        try { ret.put("taken", new JSONArray(json)); }
+        catch (Exception e) { ret.put("taken", new JSONArray()); }
+        call.resolve(ret);
+    }
+
     // Android 14+ : l'autorisation « notifications plein écran » peut être requise
     // pour réveiller l'écran quand l'appareil est déverrouillé.
     @PluginMethod

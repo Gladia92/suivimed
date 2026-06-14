@@ -42,6 +42,14 @@ export async function requestBatteryUnrestricted() {
   try { await Alarm.requestIgnoreBatteryOptimizations(); } catch {}
 }
 
+// Récupère (et vide) les prises notées via le bouton « J'ai pris » de l'écran
+// d'alarme. Renvoie [{ moment:number, date:"YYYY-MM-DD" }, …].
+export async function consumePendingTaken() {
+  if (!isNative()) return [];
+  try { const r = await Alarm.consumePendingTaken(); return Array.isArray(r?.taken) ? r.taken : []; }
+  catch { return []; }
+}
+
 // Ouvre l'écran « démarrage auto / arrière-plan » du constructeur (best-effort),
 // sinon la page « Infos de l'application ». Utile sur les OEM qui restreignent
 // agressivement l'arrière-plan (Xiaomi, Huawei, Oppo, Vivo, veille Samsung…).
