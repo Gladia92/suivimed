@@ -1785,17 +1785,17 @@ export default function App() {
             {settings.reminders?.enabled && (
               <div style={{marginTop:14}}>
                 <p style={{fontWeight:500,fontSize:12,marginBottom:6}}>Type de rappel</p>
-                <label style={{display:"flex",alignItems:"flex-start",gap:8,fontSize:12,marginBottom:8,cursor:"pointer"}}>
-                  <input type="radio" name="reminderMode" style={{marginTop:2}}
+                <label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,marginBottom:8,cursor:"pointer"}}>
+                  <input type="radio" name="reminderMode"
                     checked={(settings.reminders?.mode ?? "alarm") === "alarm"}
                     onChange={()=>updateReminders({mode:"alarm"})}/>
-                  <span><strong>Alarme + notification</strong> — réveille l'écran, son fort de 30 s qui resonne toutes les 5 min jusqu'à ce que tu coches la prise (avec bouton d'arrêt).</span>
+                  <span>Alarme + notification</span>
                 </label>
-                <label style={{display:"flex",alignItems:"flex-start",gap:8,fontSize:12,cursor:"pointer"}}>
-                  <input type="radio" name="reminderMode" style={{marginTop:2}}
+                <label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,cursor:"pointer"}}>
+                  <input type="radio" name="reminderMode"
                     checked={settings.reminders?.mode === "push"}
                     onChange={()=>updateReminders({mode:"push"})}/>
-                  <span><strong>Notification uniquement</strong> — simple notification sonore, sans réveil d'écran.</span>
+                  <span>Notification uniquement</span>
                 </label>
               </div>
             )}
