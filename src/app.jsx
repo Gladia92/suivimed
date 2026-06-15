@@ -1764,10 +1764,7 @@ export default function App() {
           </label>
           {isCapacitor && (<>
             <div style={{borderTop:"0.5px solid var(--color-border-tertiary)",margin:"16px 0"}}></div>
-            <p style={{fontWeight:500,marginBottom:4,fontSize:14}}>Rappels de prise</p>
-            <p style={{color:"var(--color-text-secondary)",fontSize:11,marginBottom:12,lineHeight:1.6}}>
-              Déclenche une vraie alarme (son fort de ~30 s + vibration, sur le volume d'alarme — sonne même en mode silencieux ou Ne pas déranger) chaque jour aux heures choisies pour penser à tes prises (mobile uniquement).
-            </p>
+            <p style={{fontWeight:500,marginBottom:12,fontSize:14}}>Rappels de prise</p>
             <label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,marginBottom:10,cursor:"pointer"}}>
               <input type="checkbox" checked={!!settings.reminders?.enabled} onChange={e=>updateReminders({enabled:e.target.checked})}/>
               Activer les rappels quotidiens
